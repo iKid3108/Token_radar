@@ -1,68 +1,75 @@
-// Token Radar's dashboard: a ranked board, per-row arithmetic and a farm plan, with filters and a
-// detail view for every protocol. It reads window.RADAR (written beside dashboard/ by main.ts) and
-// never reaches the network: every figure it shows is already in the data.
+// Token Radar - the dashboard page. Reads window.RADAR and window.BACKTEST from data.js
+// beside the page; offline and static, no fetch and no build step. Sections: score weights, DOM
+// builder, URL hash, filters and order, shared chrome, board table, detail view, validation, render.
 (function () {
   'use strict';
 
   var D = window.RADAR;
   if (!D) return;
+  var V = window.BACKTEST || null;
   var app = document.getElementById('app');
   if (!app) return;
+  var M = D.model;
 
-  var MODEL = D.model;
-  var state = { q: '', category: 'all', origin: 'all', tab: 'pre', sort: 'rank', dir: 1, selected: null, expanded: null };
+  // The whole view is this one object: the URL hash mirrors it, so any view can be linked.
+  var state = {
+    panel: 'board',   // board | validation
+    tab: 'pre',       // pre | live
+    q: '',
+    cat: 'all',
+    origin: 'all',
+    sort: 'rank',
+    dir: 1,
+    open: null,       // slug shown in the detail view
+    exp: null         // slug whose components are expanded in the board
+  };
 
-  function fmtUsd(n) {
+
+  function usd(n) {
     if (n === null || n === undefined || !isFinite(n)) return 'n/a';
-    if (Math.abs(n) >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
-    if (Math.abs(n) >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
-    if (Math.abs(n) >= 1e3) return '$' + Math.round(n / 1e3) + 'K';
+    var a = Math.abs(n);
+    if (a >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
+    if (a >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
+    if (a >= 1e3) return '$' + Math.round(n / 1e3) + 'K';
     return '$' + Math.round(n);
   }
-  function fmtPct(n) {
+  function pct(n) {
     if (n === null || n === undefined || !isFinite(n)) return 'n/a';
-    return (n > 0 ? '+' : '') + n.toFixed(2) + '%';
+    return (n > 0 ? '+' : '') + Number(n).toFixed(2) + '%';
   }
-  function fmtAge(days) {
-    if (days === null || days === undefined) return 'unknown';
-    if (days >= 365) return (days / 365).toFixed(1) + 'y';
-    return Math.max(0, Math.round(days)) + 'd';
-  }
-  function fmtMult(n) {
-    if (n === null || n === undefined) return 'n/a';
+  function mult(n) {
+    if (n === null || n === undefined || !isFinite(n)) return 'n/a';
     return Number(n).toFixed(2) + 'x';
+  }
+  function age(d) {
+    if (d === null || d === undefined) return 'unknown';
+    if (d >= 365) return (d / 365).toFixed(1) + 'y';
+    return Math.max(0, Math.round(d)) + 'd';
   }
   function tone(n) {
     if (n === null || n === undefined) return 'dim';
     return n > 0 ? 'pos' : n < 0 ? 'neg' : 'dim';
   }
 
-  // ---- the score's weights: the board's own components, re-combined in this page ----
-  // Every tilt enters the score as an exponent on its stored multiplier, so the default weight of
-  // 1 reproduces board.json's own ranking exactly and 0 switches that tilt off. Nothing is fetched.
-  var TILTS = [
-    { key: 'flow', label: '7d flow tilt', hint: 'the growth multiplier on the comparables base' },
-    { key: 'outlier', label: 'Stale-week penalty', hint: 'damps a flow beyond ±' + MODEL.flow_winsor + ' robust sigmas' },
-    { key: 'velocity', label: 'Launch velocity', hint: 'bounded boost for outgrowing the category' },
-    { key: 'concentration', label: 'Chain concentration', hint: 'discount for a single-chain record' },
-    { key: 'maturity', label: 'Maturity tilt', hint: 'time since DefiLlama began tracking' }
-  ];
-  var DEFAULT_WEIGHTS = { flow: 1, outlier: 1, velocity: 1, concentration: 1, maturity: 1 };
-  var weights = { flow: 1, outlier: 1, velocity: 1, concentration: 1, maturity: 1 };
-  var weightedRank = null;   // slug -> rank, only while the weights differ from the board's own
-  var tableHost = null;      // the table the sliders repaint, so a drag never loses the slider
-  var countB = null;
-  var weightStatus = null;
-  var resetButton = null;
+  //
+  // Each tilt enters as an exponent on its stored multiplier: a weight of 1 reproduces
+  // board.json's own ranking, 0 switches the tilt off. Re-ranking is local arithmetic.
 
-  function fmtWeight(n) { return '×' + Number(n).toFixed(2); }
-  function weightsDefault() {
-    return TILTS.every(function (t) { return weights[t.key] === DEFAULT_WEIGHTS[t.key]; });
-  }
+  var TILTS = [
+    { key: 'flow', label: 'Flow tilt', hint: '7-day robust-flow growth multiplier' },
+    { key: 'outlier', label: 'Stale week', hint: 'penalty for a flow past the winsor bound' },
+    { key: 'velocity', label: 'Velocity', hint: 'bounded boost for outgrowing the category' },
+    { key: 'concentration', label: 'Chain', hint: 'discount for a single-chain record' },
+    { key: 'maturity', label: 'Maturity', hint: 'age tilt' }
+  ];
+  var ONE = { flow: 1, outlier: 1, velocity: 1, concentration: 1, maturity: 1 };
+  var weights = { flow: 1, outlier: 1, velocity: 1, concentration: 1, maturity: 1 };
+  var rankBySlug = null;   // slug -> rank, only while the weights differ from the board's
+  var hosts = { table: null, count: null, status: null, reset: null };
+
   function num(n) { return n === null || n === undefined ? 1 : Number(n); }
-  /** The score at the current weights: the stored terms, each raised to its weight. */
-  function scoreFor(r, w) {
-    var m = r.model || {};
+  function score(row, w) {
+    var m = row.model || {};
     var s = (m.base_value_usd || 0) *
       Math.pow(num(m.growth_multiplier), w.flow) *
       Math.pow(num(m.outlier_penalty), w.outlier) *
@@ -71,170 +78,152 @@
       Math.pow(num(m.maturity_multiplier), w.maturity);
     return Math.max(1, Math.round(s));
   }
-  function shownValue(r) { return weightedRank ? scoreFor(r, weights) : r.implied_value_usd; }
-  function shownMultiple(r) { return r.tvl_usd > 0 ? shownValue(r) / r.tvl_usd : 0; }
-  function displayedRank(r) { return weightedRank && weightedRank[r.slug] ? weightedRank[r.slug] : r.rank; }
-  function rankMove(r) {
-    if (!weightedRank) return null;
-    var moved = r.rank - displayedRank(r);
-    if (!moved) return null;
-    return el('span', {
-      class: 'move ' + (moved > 0 ? 'up' : 'down'),
-      title: 'Rank ' + r.rank + ' under the model’s own weights'
-    }, (moved > 0 ? ' ↑' : ' ↓') + Math.abs(moved));
+  function atDefault() {
+    for (var i = 0; i < TILTS.length; i++) {
+      if (weights[TILTS[i].key] !== ONE[TILTS[i].key]) return false;
+    }
+    return true;
   }
-  function refreshWeightedRank() {
-    if (weightsDefault()) { weightedRank = null; return; }
+  function shownValue(row) { return rankBySlug ? score(row, weights) : row.implied_value_usd; }
+  function shownMult(row) { return row.tvl_usd > 0 ? shownValue(row) / row.tvl_usd : 0; }
+  function shownRank(row) {
+    return rankBySlug && rankBySlug[row.slug] ? rankBySlug[row.slug] : row.rank;
+  }
+  function rebuildRanks() {
+    if (atDefault()) { rankBySlug = null; return; }
+    var sorted = D.rows.slice().sort(function (a, b) {
+      var d = score(b, weights) - score(a, weights);
+      return d !== 0 ? d : a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
+    });
     var map = {};
-    D.rows.slice().sort(function (a, b) {
-      var d = scoreFor(b, weights) - scoreFor(a, weights);
-      if (d) return d;
-      return a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
-    }).forEach(function (r, i) { map[r.slug] = i + 1; });
-    weightedRank = map;
+    for (var i = 0; i < sorted.length; i++) map[sorted[i].slug] = i + 1;
+    rankBySlug = map;
   }
-  function resetWeights() {
-    TILTS.forEach(function (t) { weights[t.key] = DEFAULT_WEIGHTS[t.key]; });
-    refreshWeightedRank();
-    render();
+  function move(row) {
+    if (!rankBySlug) return null;
+    var d = row.rank - shownRank(row);
+    if (d === 0) return null;
+    return el('span', { class: 'move ' + (d > 0 ? 'up' : 'down'), title: 'Board rank #' + row.rank },
+      (d > 0 ? ' ↑' : ' ↓') + Math.abs(d));
   }
-  function paintBoard() {
-    if (tableHost) {
-      tableHost.textContent = '';
-      tableHost.appendChild(state.tab === 'pre' ? boardTable() : liveTable());
-    }
-    if (countB) countB.textContent = String(state.tab === 'live' ? liveRows().length : boardRows().length);
-    if (weightStatus) weightStatus.textContent = weightsDefault()
-      ? 'every tilt at ×1.00: this is board.json’s own ranking'
-      : 're-ranked in this page from the stored components';
-    if (resetButton) resetButton.disabled = weightsDefault();
-  }
-  function toggleExpand(slug) {
-    state.expanded = state.expanded === slug ? null : slug;
-    writeHash();
-    paintBoard();
-    var buttons = tableHost ? tableHost.querySelectorAll('button.exp') : [];
-    for (var i = 0; i < buttons.length; i++) {
-      if (buttons[i].getAttribute('data-slug') === slug) { buttons[i].focus(); break; }
-    }
-  }
+
 
   function el(tag, attrs) {
     var node = document.createElement(tag);
     if (attrs) {
-      Object.keys(attrs).forEach(function (k) {
+      for (var k in attrs) {
+        if (!Object.prototype.hasOwnProperty.call(attrs, k)) continue;
         var v = attrs[k];
-        if (v === null || v === undefined || v === false) return;
+        if (v === null || v === undefined || v === false) continue;
         if (k === 'class') node.className = v;
         else if (k === 'text') node.textContent = String(v);
         else if (k.slice(0, 2) === 'on') node.addEventListener(k.slice(2), v);
         else node.setAttribute(k, String(v));
-      });
+      }
     }
     for (var i = 2; i < arguments.length; i++) {
       var child = arguments[i];
       if (child === null || child === undefined || child === false) continue;
-      if (Array.isArray(child)) child.forEach(function (c) { if (c) node.appendChild(c); });
-      else if (typeof child === 'string') node.appendChild(document.createTextNode(child));
-      else node.appendChild(child);
+      if (Array.isArray(child)) {
+        for (var j = 0; j < child.length; j++) if (child[j]) node.appendChild(child[j]);
+      } else if (typeof child === 'string' || typeof child === 'number') {
+        node.appendChild(document.createTextNode(String(child)));
+      } else {
+        node.appendChild(child);
+      }
     }
     return node;
   }
 
-  // ---- filters, sorting and the URL hash (so a view can be linked to and screenshotted) ----
+
   function readHash() {
     var raw = window.location.hash.replace(/^#/, '');
     if (!raw) return;
     var p = new URLSearchParams(raw);
-    if (p.get('p')) state.selected = p.get('p');
+    if (p.get('p')) state.open = p.get('p');
     if (p.get('q')) state.q = p.get('q');
-    if (p.get('category')) state.category = p.get('category');
+    if (p.get('category')) state.cat = p.get('category');
     if (p.get('origin')) state.origin = p.get('origin');
     if (p.get('tab')) state.tab = p.get('tab');
     if (p.get('sort')) state.sort = p.get('sort');
     if (p.get('dir')) state.dir = Number(p.get('dir')) < 0 ? -1 : 1;
-    if (p.get('x')) state.expanded = p.get('x');
+    if (p.get('x')) state.exp = p.get('x');
+    if (p.get('panel')) state.panel = p.get('panel');
   }
   function writeHash() {
     var p = new URLSearchParams();
-    if (state.selected) p.set('p', state.selected);
+    if (state.open) p.set('p', state.open);
     if (state.q) p.set('q', state.q);
-    if (state.category !== 'all') p.set('category', state.category);
+    if (state.cat !== 'all') p.set('category', state.cat);
     if (state.origin !== 'all') p.set('origin', state.origin);
     if (state.tab !== 'pre') p.set('tab', state.tab);
     if (state.sort !== 'rank') p.set('sort', state.sort);
     if (state.dir < 0) p.set('dir', '-1');
-    if (state.expanded) p.set('x', state.expanded);
+    if (state.exp) p.set('x', state.exp);
+    if (state.panel !== 'board') p.set('panel', state.panel);
     var s = p.toString();
     window.history.replaceState(null, '', s ? '#' + s : window.location.pathname);
   }
 
-  function matches(r) {
-    if (state.category !== 'all' && (r.category || 'Other') !== state.category) return false;
+
+  function categories() {
+    var seen = {};
+    for (var i = 0; i < D.rows.length; i++) seen[D.rows[i].category || 'Other'] = 1;
+    return Object.keys(seen).sort();
+  }
+  function hit(row) {
+    if (state.cat !== 'all' && (row.category || 'Other') !== state.cat) return false;
     var q = state.q.trim().toLowerCase();
     if (!q) return true;
-    var hay = [r.name, r.slug, r.category || '', (r.chains || []).join(' ')].join(' ').toLowerCase();
-    return hay.indexOf(q) >= 0;
+    return [row.name, row.slug, row.category || '', (row.chains || []).join(' ')]
+      .join(' ').toLowerCase().indexOf(q) >= 0;
   }
   function boardRows() {
-    var list = D.rows.filter(function (r) {
-      return (state.origin === 'all' || r.origin === state.origin) && matches(r);
-    });
+    var out = [];
+    for (var i = 0; i < D.rows.length; i++) {
+      var r = D.rows[i];
+      if ((state.origin === 'all' || r.origin === state.origin) && hit(r)) out.push(r);
+    }
     var key = state.sort;
-    return list.sort(function (a, b) {
+    out.sort(function (a, b) {
       var av, bv;
       if (key === 'name') { av = a.name.toLowerCase(); bv = b.name.toLowerCase(); }
       else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
       else if (key === 'growth') { av = a.change_7d === null ? -1e9 : a.change_7d; bv = b.change_7d === null ? -1e9 : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? 1e9 : a.age_days; bv = b.age_days === null ? 1e9 : b.age_days; }
       else if (key === 'implied') { av = shownValue(a); bv = shownValue(b); }
-      else { av = displayedRank(a); bv = displayedRank(b); }
+      else { av = shownRank(a); bv = shownRank(b); }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
       return a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
     });
+    return out;
   }
   function liveRows() {
     var q = state.q.trim().toLowerCase();
     return D.live.filter(function (r) {
-      if (state.category !== 'all' && (r.category || 'Other') !== state.category) return false;
+      if (state.cat !== 'all' && (r.category || 'Other') !== state.cat) return false;
       if (!q) return true;
-      var hay = [r.name, r.slug, r.category || '', (r.chains || []).join(' ')].join(' ').toLowerCase();
-      return hay.indexOf(q) >= 0;
+      return [r.name, r.slug, r.category || '', (r.chains || []).join(' ')]
+        .join(' ').toLowerCase().indexOf(q) >= 0;
     });
   }
 
-  // ---- shared chrome ----
-  function topBar() {
-    return el('div', { class: 'bar-top' },
-      el('div', { class: 'brand' },
-        el('span', { class: 'mark' }),
-        el('span', null, 'TOKEN RADAR')
-      ),
-      el('div', { class: 'meta' },
-        el('span', null, 'snapshot ' + D.as_of),
-        el('span', null, el('b', null, String(D.watchlist_size)), ' watchlist / ', el('b', null, String(D.board_size)), ' ranked'),
-        el('span', null, D.model_version)
-      )
-    );
+
+  function chip(text, kind) {
+    return el('span', { class: 'chip ' + (kind || '') }, text);
   }
-  function foot() {
-    return el('div', { class: 'foot' },
-      el('span', null, 'DefiLlama protocol snapshot ' + D.as_of + ' · ' + D.board_size + ' ranked rows · ' + D.live_size + ' live-token comparables'),
-      el('span', null, 'Implied value is this radar’s estimate, not a promise of a token or a price.')
-    );
+  function originChip(row) {
+    var kind = row.origin === 'watchlist' ? 'wl' : row.origin === 'below-floor' ? 'early' : 'off';
+    var text = row.origin === 'watchlist' ? 'watchlist' : row.origin === 'below-floor' ? 'early find' : 'off-list';
+    return chip(text, kind);
   }
-  function chip(text, kind) { return el('span', { class: 'chip ' + (kind || '') }, text); }
-  function originChip(r) {
-    var label = r.origin === 'watchlist' ? 'watchlist' : r.origin === 'below-floor' ? 'early find' : 'off-list';
-    return chip(label, r.origin === 'watchlist' ? 'wl' : r.origin === 'below-floor' ? 'early' : 'off');
-  }
-  function valueCell(value, cap, isLive) {
-    var width = Math.max(3, Math.round((value / cap) * 100));
+  function valueCell(value, cap, live) {
+    var width = Math.max(3, Math.round((value / (cap || 1)) * 100));
     return el('div', { class: 'val' },
-      el('div', { class: 'track', 'aria-hidden': 'true' }, el('i', { class: isLive ? 'live' : '', style: 'width:' + width + '%' })),
-      el('b', null, fmtUsd(value))
-    );
+      el('div', { class: 'track', 'aria-hidden': 'true' },
+        el('i', { class: live ? 'live' : null, style: 'width:' + width + '%' })),
+      el('b', null, usd(value)));
   }
   function segmented(options, value, onPick) {
     return el('div', { class: 'seg' }, options.map(function (o) {
@@ -249,8 +238,35 @@
   function stat(value, label) {
     return el('div', { class: 'stat' }, el('div', { class: 'v' }, String(value)), el('div', { class: 'k' }, label));
   }
+  function signed3(n) {
+    if (n === null || n === undefined || !isFinite(n)) return 'n/a';
+    return (n > 0 ? '+' : '') + Number(n).toFixed(3);
+  }
 
-  // ---- the board ----
+  function topBar() {
+    function tab(label, key) {
+      return el('button', {
+        type: 'button',
+        'aria-pressed': state.panel === key ? 'true' : 'false',
+        text: label,
+        onclick: function () { state.panel = key; writeHash(); render(); }
+      });
+    }
+    return el('div', { class: 'bar-top' },
+      el('div', { class: 'brand' }, el('span', { class: 'mark' }), el('span', null, 'TOKEN RADAR')),
+      el('div', { class: 'seg tabs' }, tab('Board', 'board'), tab('Validation', 'validation')),
+      el('div', { class: 'meta' },
+        el('span', null, 'snapshot ' + D.as_of),
+        el('span', null, el('b', null, String(D.watchlist_size)), ' watchlist / ', el('b', null, String(D.board_size)), ' ranked'),
+        el('span', null, D.model_version)));
+  }
+  function foot() {
+    return el('div', { class: 'foot' },
+      el('span', null, 'DefiLlama protocol snapshot ' + D.as_of + ' · ' + D.board_size + ' ranked rows · ' + D.live_size + ' live-token comparables'),
+      el('span', null, 'Implied value is this radar’s estimate, not a promise of a token or a price.'));
+  }
+
+
   function hero() {
     return el('section', { class: 'hero' },
       el('div', null,
@@ -265,35 +281,33 @@
           el('b', null, String(D.off_list_size)),
           ' at or above the floor that the list leaves out. Each base value is a log-log comparables regression over the snapshot’s ',
           el('b', null, String(D.live_size)),
-          ' live-token protocols, fitted inside each category against its median TVL. A winsorized seven-day flow tilts that base, a robust median/MAD test damps any stale outlier week, faster-than-category growth earns a bounded velocity boost and a single-chain record takes a concentration discount. The weight sliders re-rank every row live from those stored terms. A record that carries no token is not proof there is none.'
-        )
-      ),
+          ' live-token protocols, fitted inside each category against its median TVL. A winsorized seven-day flow tilts that base, a robust median/MAD test damps any stale outlier week, faster-than-category growth earns a bounded velocity boost and a single-chain record takes a concentration discount. The weight sliders re-rank every row live from those stored terms. A record that carries no token is not proof there is none.')),
       el('div', { class: 'stats' },
         stat(D.watchlist_size, 'watchlist protocols covered'),
         stat(D.board_size, 'pre-token protocols ranked'),
         stat(D.early_size, 'early finds below the floor'),
         stat(D.off_list_size, 'at or above the floor, off-list'),
         stat(D.live_size, 'live tokens set aside'),
-        stat(D.token_recorded_size, 'records that carry a token')
-      )
-    );
+        stat(D.token_recorded_size, 'records that carry a token')));
   }
 
   function controls() {
-    var categories = Object.keys(D.rows.reduce(function (a, r) { a[r.category || 'Other'] = 1; return a; }, {})).sort();
-    if (categories.indexOf(state.category) < 0 && state.category !== 'all') state.category = 'all';
+    var cats = categories();
+    if (state.cat !== 'all' && cats.indexOf(state.cat) < 0) state.cat = 'all';
 
-    var search = el('input', { type: 'search', id: 'q', placeholder: 'Name, slug, chain or category', value: state.q, 'aria-label': 'Search the board' });
+    var search = el('input', {
+      type: 'search', id: 'q', placeholder: 'Name, slug, chain or category',
+      value: state.q, 'aria-label': 'Search the board'
+    });
     search.addEventListener('input', function () { state.q = search.value; writeHash(); render(); });
 
     var select = el('select', { id: 'category', 'aria-label': 'Filter by category' },
       el('option', { value: 'all', text: 'All categories' }),
-      categories.map(function (c) { return el('option', { value: c, text: c }); })
-    );
-    select.value = state.category;
-    select.addEventListener('change', function () { state.category = select.value; writeHash(); render(); });
+      cats.map(function (c) { return el('option', { value: c, text: c }); }));
+    select.value = state.cat;
+    select.addEventListener('change', function () { state.cat = select.value; writeHash(); render(); });
 
-    countB = el('b', null, String(state.tab === 'live' ? liveRows().length : boardRows().length));
+    hosts.count = el('b', null, String(state.tab === 'live' ? liveRows().length : boardRows().length));
     return el('div', { class: 'controls' },
       segmented([
         { value: 'all', label: 'Whole board' },
@@ -307,229 +321,71 @@
         { value: 'pre', label: 'No token recorded' },
         { value: 'live', label: 'Token already trades' }
       ], state.tab, function (v) { state.tab = v; writeHash(); render(); }),
-      el('span', { class: 'count' }, countB, ' rows shown')
-    );
+      el('span', { class: 'count' }, hosts.count, ' rows shown'));
   }
 
-  /** The weight sliders: the same components, re-combined, with the ranking following the drag. */
+  /** The weight sliders: exponents on the stored tilts, re-ranking the table as they move. */
   function weightPanel() {
-    weightStatus = el('span', { class: 'wstat' }, weightsDefault()
+    hosts.status = el('span', { class: 'wstat' }, atDefault()
       ? 'every tilt at ×1.00: this is board.json’s own ranking'
       : 're-ranked in this page from the stored components');
-    resetButton = el('button', { type: 'button', class: 'button', text: 'Reset weights', onclick: resetWeights });
-    resetButton.disabled = weightsDefault();
+    hosts.reset = el('button', {
+      type: 'button', class: 'button', text: 'Reset weights',
+      onclick: function () {
+        for (var i = 0; i < TILTS.length; i++) weights[TILTS[i].key] = ONE[TILTS[i].key];
+        rebuildRanks();
+        render();
+      }
+    });
+    hosts.reset.disabled = atDefault();
+
     return el('div', { class: 'weights' },
       el('span', { class: 'wtitle' }, 'Score weights'),
       TILTS.map(function (t) {
-        var out = el('span', { class: 'wv' }, fmtWeight(weights[t.key]));
+        var out = el('span', { class: 'wv' }, '×' + Number(weights[t.key]).toFixed(2));
         var input = el('input', {
           type: 'range', min: '0', max: '2', step: '0.25', value: String(weights[t.key]),
           'aria-label': t.label + ' weight', title: t.hint
         });
         input.addEventListener('input', function () {
           weights[t.key] = Number(input.value);
-          out.textContent = fmtWeight(weights[t.key]);
-          refreshWeightedRank();
+          out.textContent = '×' + Number(weights[t.key]).toFixed(2);
+          rebuildRanks();
           paintBoard();
         });
         return el('label', null, el('span', { text: t.label }), input, out);
       }),
-      weightStatus,
-      el('span', { class: 'reset' }, resetButton)
-    );
+      hosts.status,
+      el('span', { class: 'reset' }, hosts.reset));
   }
 
-  /** One row's arithmetic, every term read from board.json and none of it fetched. */
-  function breakdown(r) {
-    var m = r.model || {};
-    var grid = el('div', { class: 'calc' });
-    function line(k, d, v, cls) {
-      grid.appendChild(el('div', { class: 'k ' + (cls || '') }, k));
-      grid.appendChild(el('div',{ class: 'd '+ (cls || '')}, d));
-      grid.appendChild(el('div', { class: 'v ' + (cls || '') }, v));
+  /** Repaint just the table and the counters, so a slider drag never loses the slider itself. */
+  function paintBoard() {
+    if (hosts.table) {
+      hosts.table.textContent = '';
+      hosts.table.appendChild(state.tab === 'pre' ? boardTable() : liveTable());
     }
-    var stale = m.flow_stale;
-    line(
-      'Base comparables',
-      'anchor ' + fmtUsd(m.category_anchor_tvl) + ' × ' + fmtMult(m.category_multiple) +
-        ' at that anchor × (TVL / anchor)^β — ' + (m.category_fallback
-          ? 'no live peer in this category, so the global fit'
-          : (m.category_peers || 0) + ' live comparable' + (m.category_peers === 1 ? '' : 's')),
-      fmtUsd(m.base_value_usd)
-    );
-    line(
-      'Category adjustment',
-      'the anchor is the median TVL of every ' + (r.category || 'Other') + ' row the snapshot lists: ' + fmtUsd(m.category_anchor_tvl),
-      fmtMult(m.category_multiple)
-    );
-    line(
-      'Flow adjustment',
-      fmtPct(m.flow_center) + ' ± ' + fmtPct(m.flow_scale) + ' robust ' + (m.flow_fallback ? 'global' : (r.category || 'category')) +
-        ' baseline; this week ' + fmtPct(r.change_7d) + ' → winsorized ' + fmtPct(m.flow_used_pct) +
-        ' (z ' + (m.flow_z === null || m.flow_z === undefined ? 'n/a' : Number(m.flow_z).toFixed(2)) + ')',
-      fmtMult(m.growth_multiplier)
-    );
-    line(
-      'Stale-week penalty',
-      stale ? 'this flow sits beyond ±' + MODEL.flow_winsor + ' robust sigmas of the baseline, so the result is damped'
-        : 'no stale week: the flow is inside ±' + MODEL.flow_winsor + ' robust sigmas',
-      fmtMult(m.outlier_penalty)
-    );
-    line(
-      'Launch velocity',
-      stale ? 'a stale week is damped by the outlier penalty, so it earns no velocity credit'
-        : Number(m.velocity_boost_pct || 0) > 0
-          ? '+' + Number(m.velocity_boost_pct).toFixed(0) + '% faster than its category’s flow centre (z ' + Number(m.velocity_z || 0).toFixed(2) + ', capped at ' + MODEL.velocity_cap + ')'
-          : 'at or below its category’s flow centre: no boost, and never a penalty',
-      fmtMult(m.velocity_multiplier)
-    );
-    line(
-      'Chain concentration',
-      (m.chain_count || 0) + ' chain' + (m.chain_count === 1 ? '' : 's') + ' on record' +
-        (m.concentration_single ? ' — a single-chain record, so the value is discounted' : ''),
-      fmtMult(m.concentration_multiplier)
-    );
-    line(
-      'Maturity tilt',
-      fmtAge(r.age_days) + ' on record; an unknown age counts as ' + MODEL.unknown_age_days + ' days',
-      fmtMult(m.maturity_multiplier)
-    );
-    line(
-      'Weights in this page',
-      'flow ' + fmtWeight(weights.flow) + ', outlier ' + fmtWeight(weights.outlier) + ', velocity ' + fmtWeight(weights.velocity) +
-        ', concentration ' + fmtWeight(weights.concentration) + ', maturity ' + fmtWeight(weights.maturity),
-      ''
-    );
-    line(
-      'Final score',
-      'base × growth^w × outlier^w × velocity^w × concentration^w × maturity^w',
-      fmtUsd(shownValue(r)),
-      'tot'
-    );
-    if (weightedRank) {
-      line('Model’s own score', 'board.json rank #' + r.rank + ' at every tilt ×1.00', fmtUsd(r.implied_value_usd), 'tot');
+    if (hosts.count) hosts.count.textContent = String(state.tab === 'live' ? liveRows().length : boardRows().length);
+    if (hosts.status) {
+      hosts.status.textContent = atDefault()
+        ? 'every tilt at ×1.00: this is board.json’s own ranking'
+        : 're-ranked in this page from the stored components';
     }
-    return el('div', { class: 'bd' },
-      el('p', { class: 'sub' }, 'Score components for ' + r.name + ' — every term below is stored in board.json; the page computes nothing it was not given.'),
-      grid
-    );
+    if (hosts.reset) hosts.reset.disabled = atDefault();
   }
 
-  // ---- the score path: the order the model applies its own tilts ----
-  // The snapshot is one point in time, so there is no weekly score series to plot. What the stored
-  // components do derive is the order the model applies its tilts, each a multiplier on the running
-  // value, and the page can draw that path without inventing a single data point.
-  var SCORE_STAGES = [
-    { key: 'growth_multiplier', label: 'Flow', note: '7d robust-flow growth tilt' },
-    { key: 'outlier_penalty', label: 'Stale', note: 'stale-week penalty' },
-    { key: 'velocity_multiplier', label: 'Velocity', note: 'launch-velocity boost' },
-    { key: 'concentration_multiplier', label: 'Chain', note: 'single-chain concentration discount' },
-    { key: 'maturity_multiplier', label: 'Maturity', note: 'age tilt' }
-  ];
-
-  /** The cumulative multiplier after each tilt, with the comparables base as stage zero. */
-  function scorePath(r) {
-    var m = r.model || {};
-    var base = m.base_value_usd || 0;
-    var path = [{ label: 'Base', note: 'comparables regression', mult: 1, value: base }];
-    var running = 1;
-    SCORE_STAGES.forEach(function (stage) {
-      var mult = num(m[stage.key]);
-      running *= mult;
-      path.push({ label: stage.label, note: stage.note, mult: mult, value: base * running });
-    });
-    return path;
-  }
-
-  /** A column sparkline of the cumulative path; the table under it carries the exact values. */
-  function sparkline(r) {
-    var path = scorePath(r);
-    var mults = path.map(function (p) { return p.mult; });
-    var lo = Math.min.apply(null, mults);
-    var hi = Math.max.apply(null, mults);
-    if (hi - lo < 0.04) { var mid = (hi + lo) / 2; lo = mid - 0.02; hi = mid + 0.02; }
-    function at(mult) { return 4 + ((mult - lo) / (hi - lo)) * 92; }
-    var summary = 'Score path from the comparables base: ' + path.slice(1).map(function (p) {
-      return p.label + ' ' + fmtMult(p.mult);
-    }).join(', ') + ' — a final tilt of ' + fmtMult(path[path.length - 1].mult) + ' on the base.';
-    return el('div', { class: 'spark' },
-      el('div', { class: 'spark-plot', role: 'img', 'aria-label': summary },
-        el('span', { class: 'spark-ref', style: 'bottom:' + at(1).toFixed(1) + '%', 'aria-hidden': 'true' }),
-        path.map(function (p, i) {
-          return el('div', {
-            class: 'spark-col' + (i === path.length - 1 ? ' last' : ''),
-            title: p.label + ' — ' + p.note + ': ' + fmtMult(p.mult) + ', running ' + fmtUsd(p.value)
-          }, el('i', { style: 'height:' + at(p.mult).toFixed(1) + '%' }));
-        })
-      ),
-      el('div', { class: 'spark-labels', 'aria-hidden': 'true' },
-        path.map(function (p) { return el('span', null, p.label); })
-      )
-    );
-  }
-
-  /** The path as a chart plus its table twin: the table carries every exact value. */
-  function scorePathCard(r) {
-    var path = scorePath(r);
-    return el('section', { class: 'card' },
-      el('h3', null, 'Score path'),
-      el('p', { class: 'sub' }, 'The snapshot is a single point in time, so this is not a weekly history: it is the order the model applies its stored tilts to the comparables base, each one a multiplier on the running value. The hairline marks ×1.00, where a tilt leaves the score unchanged.'),
-      sparkline(r),
-      el('table', { class: 'path' },
-        el('thead', null, el('tr', null,
-          el('th', { scope: 'col', text: 'Stage' }),
-          el('th', { scope: 'col', class: 'r', text: 'Tilt' }),
-          el('th', { scope: 'col', class: 'r', text: 'Running value' })
-        )),
-        el('tbody', null, path.map(function (p, i) {
-          return el('tr', { class: i === path.length - 1 ? 'last' : null },
-            el('td', null, p.label, i === 0 ? null : el('span', { class: 'dim' }, ' · ' + p.note)),
-            el('td', { class: 'r' }, i === 0 ? 'base' : fmtMult(p.mult)),
-            el('td', { class: 'r' }, fmtUsd(p.value))
-          );
-        }))
-      )
-    );
-  }
-
-  /** Why the launch-velocity multiplier is what it is, in this row's own numbers. */
-  function velocityNote(r) {
-    var m = r.model || {};
-    var z = m.flow_z === null || m.flow_z === undefined ? null : Number(m.flow_z);
-    if (z === null) {
-      return 'Launch velocity: no 7-day flow is recorded, so the multiplier is ×1.00. The signal only rewards growth above the category’s own robust flow centre, and it never subtracts.';
+  function toggleExpanded(slug) {
+    state.exp = state.exp === slug ? null : slug;
+    writeHash();
+    paintBoard();
+    var buttons = hosts.table ? hosts.table.querySelectorAll('button.exp') : [];
+    for (var i = 0; i < buttons.length; i++) {
+      if (buttons[i].getAttribute('data-slug') === slug) { buttons[i].focus(); break; }
     }
-    if (m.flow_stale) {
-      return 'Launch velocity: none this week. The flow is a stale outlier (z ' + z.toFixed(2) + ', beyond ±' + MODEL.flow_winsor + ' robust sigmas), so the outlier penalty damps the score and the stale week earns no velocity credit on top.';
-    }
-    if (Number(m.velocity_boost_pct) > 0) {
-      return 'Launch velocity: the 7-day TVL flow beats its category’s robust centre by ' + z.toFixed(2) + ' sigmas, capped at ' + MODEL.velocity_cap + ', so the score earns a bounded boost of +' + Number(m.velocity_boost_pct).toFixed(0) + '% (' + fmtMult(m.velocity_multiplier) + '). A flow at or below the centre earns ×1.00.';
-    }
-    return 'Launch velocity: the flow sits at or below the category’s robust centre (z ' + z.toFixed(2) + '), so the multiplier is ×1.00. The signal never penalises; the outlier test owns the downside.';
   }
 
-  /** Why the concentration multiplier is what it is: the snapshot's chain record is the proxy. */
-  function concentrationNote(r) {
-    var m = r.model || {};
-    var chains = r.chains || [];
-    var count = m.chain_count || chains.length;
-    var shown = chains.slice(0, 4).join(', ') + (chains.length > 4 ? ' and ' + (chains.length - 4) + ' more' : '');
-    if (m.concentration_single) {
-      return 'Chain concentration: the snapshot lists a single chain (' + (shown || 'no chain recorded') + '), so the score takes a ×' + Number(m.concentration_multiplier).toFixed(2) + ' discount. The snapshot records which chains a protocol runs on but not how its TVL splits across them, so a one-chain record is the only concentration proxy it carries.';
-    }
-    return 'Chain concentration: ' + count + ' chains on record (' + (shown || 'no chain recorded') + '), so the multiplier is ×' + Number(m.concentration_multiplier).toFixed(2) + '. Per-chain TVL is not in the snapshot, so chain count is the proxy.';
-  }
 
-  /** The two launch signals, stated in full for this row. */
-  function signalsCard(r) {
-    return el('section', { class: 'card' },
-      el('h3', null, 'Launch signals'),
-      el('p', { class: 'sub' }, velocityNote(r)),
-      el('p', { class: 'sub' }, concentrationNote(r)),
-      el('p', { class: 'sub' }, 'Both signals are folded into the score and, like every other tilt, can be re-weighted from the sliders above the board.')
-    );
-  }
-
+  /** A sortable column head: the second click flips the direction. */
   function th(label, key, align) {
     return el('th', { scope: 'col', class: align || null },
       el('button', {
@@ -538,366 +394,577 @@
         onclick: function () {
           if (state.sort === key) state.dir = -state.dir;
           else { state.sort = key; state.dir = key === 'name' ? 1 : -1; }
-          writeHash(); render();
+          writeHash();
+          render();
         }
       },
         label,
-        state.sort === key ? el('span', { class: 'arrow', 'aria-hidden': 'true' }, state.dir < 0 ? '↓' : '↑') : null
-      )
-    );
+        state.sort === key ? el('span', { class: 'arrow', 'aria-hidden': 'true' }, state.dir < 0 ? '↓' : '↑') : null));
   }
 
-  function openDetail(slug) { state.selected = slug; writeHash(); render(); window.scrollTo(0, 0); }
   function rowAttrs(r) {
     return {
       tabindex: '0',
       onclick: function () { openDetail(r.slug); },
-      onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
+      onkeydown: function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); }
+      }
     };
+  }
+
+  /**
+   * The score-components panel for one row. Every line is a field board.json already carries:
+   * the page recomputes the product from the displayed terms and checks it against the stored
+   * implied value, so a reader can audit the arithmetic rather than trust it.
+   */
+  function breakdown(r) {
+    var m = r.model || {};
+    var grid = el('div', { class: 'calc' });
+    function line(k, d, v, cls) {
+      grid.appendChild(el('div', { class: 'k ' + (cls || '') }, k));
+      grid.appendChild(el('div', { class: 'd ' + (cls || '') }, d));
+      grid.appendChild(el('div', { class: 'v ' + (cls || '') }, v));
+    }
+    var stale = m.flow_stale === true;
+    line('Regression base',
+      'anchor ' + usd(m.category_anchor_tvl) + ' × ' + mult(m.category_multiple) + ' at that anchor × (TVL / anchor)^β — ' +
+        (m.category_fallback ? 'no live peer in this category, so the global fit answered'
+          : (m.category_peers || 0) + ' live comparable' + (m.category_peers === 1 ? '' : 's')),
+      usd(m.base_value_usd));
+    line('Category anchor',
+      'the median TVL of every ' + (r.category || 'Other') + ' record the snapshot lists, live or not',
+      mult(m.category_multiple));
+    line('Flow tilt',
+      pct(m.flow_center) + ' ± ' + pct(m.flow_scale) + ' robust ' + (m.flow_fallback ? 'global' : (r.category || 'category')) +
+        ' baseline; this week ' + pct(r.change_7d) + ' → winsorized ' + pct(m.flow_used_pct) +
+        ' (z ' + (m.flow_z === null || m.flow_z === undefined ? 'n/a' : Number(m.flow_z).toFixed(2)) + ')',
+      mult(m.growth_multiplier));
+    line('Stale-week penalty',
+      stale ? 'beyond ±' + M.flow_winsor + ' robust sigmas, so the growth input is damped'
+        : 'inside ±' + M.flow_winsor + ' robust sigmas: no damping',
+      mult(m.outlier_penalty));
+    line('Launch velocity',
+      stale ? 'a damped stale week earns no velocity credit on top'
+        : Number(m.velocity_boost_pct || 0) > 0
+          ? '+' + Number(m.velocity_boost_pct).toFixed(0) + '% faster than its category’s flow centre (z ' +
+            Number(m.velocity_z || 0).toFixed(2) + ', capped at ' + M.velocity_cap + ')'
+          : 'at or below its category’s flow centre: no boost, and never a penalty',
+      mult(m.velocity_multiplier));
+    line('Chain concentration',
+      (m.chain_count || 0) + ' chain' + (m.chain_count === 1 ? '' : 's') + ' on record' +
+        (m.concentration_single ? ' — a single-chain record, so the value is discounted' : ''),
+      mult(m.concentration_multiplier));
+    line('Maturity tilt',
+      age(r.age_days) + ' on record; an unknown age counts as ' + M.unknown_age_days + ' days',
+      mult(m.maturity_multiplier));
+    if (!atDefault()) {
+      line('Weights in this page',
+        TILTS.map(function (t) { return t.label + ' ' + Number(weights[t.key]).toFixed(2); }).join(', '), '');
+    }
+    line('Final score',
+      'base × flow^w × stale^w × velocity^w × chain^w × maturity^w',
+      usd(shownValue(r)), 'tot');
+    if (!atDefault()) {
+      line('Board’s own score', 'board.json rank #' + r.rank + ' with every tilt at 1.00', usd(r.implied_value_usd), 'tot');
+    }
+    var recomputed = score(r, atDefault() ? ONE : weights);
+    var stored = r.implied_value_usd;
+    return el('div', { class: 'bd' },
+      el('p', { class: 'sub' },
+        'Every term below is stored in board.json for this row; the page computes nothing it was not given. ' +
+        'The product of the displayed terms comes to ' + usd(recomputed) +
+        (atDefault()
+          ? (recomputed === stored
+              ? ', the implied value board.json stores for this row.'
+              : ', against the ' + usd(stored) + ' board.json stores for it.')
+          : ', the re-ranked value at the weights above; board.json stores ' + usd(stored) + ' for it.')),
+      grid);
   }
 
   function boardTable() {
     var list = boardRows();
-    if (!list.length) return emptyState();
-    var cap = Math.max.apply(null, list.map(function (r) { return shownValue(r); }));
+    if (list.length === 0) return emptyState();
+    var cap = 1;
+    for (var i = 0; i < list.length; i++) cap = Math.max(cap, shownValue(list[i]));
     var tbody = el('tbody');
     list.forEach(function (r) {
-      var open = state.expanded === r.slug;
+      var open = state.exp === r.slug;
       tbody.appendChild(el('tr', rowAttrs(r),
         el('td', { class: 'rank' },
           el('button', {
             type: 'button', class: 'exp', 'data-slug': r.slug,
             'aria-expanded': open ? 'true' : 'false',
-            'aria-label': (open ? 'Hide' : 'Show') + ' score components for ' + r.name,
+            'aria-label': (open ? 'Hide' : 'Show') + ' the score components for ' + r.name,
             title: 'Show every component of this score',
-            onclick: function (e) { e.stopPropagation(); toggleExpand(r.slug); },
+            onclick: function (e) { e.stopPropagation(); toggleExpanded(r.slug); },
             onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }
           }, open ? '▾' : '▸'),
-          el('b', null, '#' + displayedRank(r)),
-          rankMove(r)
-        ),
+          el('b', null, '#' + shownRank(r)),
+          move(r)),
         el('td', null, el('div', { class: 'who' },
           el('b', null, r.name),
-          el('span', null, (r.category || 'Other') + ' · ' + ((r.chains || []).slice(0, 2).join(' / ') || 'chain unnamed'))
-        )),
-        el('td', { class: 'r' }, fmtUsd(r.tvl_usd)),
-        el('td', { class: 'r ' + tone(r.change_7d) }, fmtPct(r.change_7d),
-          r.model.flow_stale
+          el('span', null, (r.category || 'Other') + ' · ' + ((r.chains || []).slice(0, 2).join(' / ') || 'no chain recorded')))),
+        el('td', { class: 'r' }, usd(r.tvl_usd)),
+        el('td', { class: 'r ' + tone(r.change_7d) }, pct(r.change_7d),
+          r.model && r.model.flow_stale
             ? el('span', {
                 class: 'stale',
-                title: 'Stale flow: winsorized at ±' + MODEL.flow_winsor + ' robust sigmas; the result is damped by ' + fmtMult(r.model.outlier_penalty) + '.',
+                title: 'Stale flow: winsorized at ±' + M.flow_winsor + ' robust sigmas; the result is damped by ' +
+                  mult(r.model.outlier_penalty) + '.'
               }, ' ⚠')
             : null),
-        el('td', { class: 'r' }, fmtAge(r.age_days)),
+        el('td', { class: 'r' }, age(r.age_days)),
         el('td', {
           class: 'r',
-          title: 'Base ' + fmtMult(r.model.base_multiple) + ' → growth ' + fmtMult(r.model.growth_multiplier) +
-            ', outlier ' + fmtMult(r.model.outlier_penalty) + ', velocity ' + fmtMult(r.model.velocity_multiplier) +
-            ', concentration ' + fmtMult(r.model.concentration_multiplier) + ', maturity ' + fmtMult(r.model.maturity_multiplier),
-        }, fmtMult(shownMultiple(r))),
+          title: 'base ' + mult(r.model.base_multiple) + ' → flow ' + mult(r.model.growth_multiplier) +
+            ', stale ' + mult(r.model.outlier_penalty) + ', velocity ' + mult(r.model.velocity_multiplier) +
+            ', chain ' + mult(r.model.concentration_multiplier) + ', maturity ' + mult(r.model.maturity_multiplier)
+        }, mult(shownMult(r))),
         el('td', null, valueCell(shownValue(r), cap, false)),
-        el('td', null, originChip(r))
-      ));
+        el('td', null, originChip(r))));
       if (open) {
         tbody.appendChild(el('tr', { class: 'bdrow' },
-          el('td', { colspan: '8' }, breakdown(r))
-        ));
+          el('td', { colspan: '8' }, breakdown(r))));
       }
     });
     return el('div', { class: 'panel' },
       el('div', { class: 'wrap' },
         el('table', null,
-          el('caption', { class: 'sub' }, 'Strongest score first. Expand any row (▸) to see every component of its score; select the row itself to audit its comparables, its arithmetic and its farm plan.'),
+          el('caption', { class: 'sub' },
+            'Strongest implied value first. Expand a row (▸) for every component of its score, or select the row for its ' +
+            'comparables, its arithmetic and its farm plan.'),
           el('thead', null, el('tr', null,
             th('#', 'rank'), th('Protocol', 'name'), th('TVL', 'tvl'), th('7d growth', 'growth'),
             th('Age', 'age'), th('Multiple', 'implied'), th('Implied value', 'implied'),
-            el('th', { scope: 'col', text: 'Origin' })
-          )),
-          tbody
-        )
-      )
-    );
+            el('th', { scope: 'col', text: 'Origin' }))),
+          tbody)));
   }
 
   function liveTable() {
     var list = liveRows();
-    if (!list.length) return emptyState();
-    var cap = Math.max.apply(null, list.map(function (r) { return r.mcap_usd; }));
+    if (list.length === 0) return emptyState();
+    var cap = 1;
+    for (var i = 0; i < list.length; i++) cap = Math.max(cap, list[i].mcap_usd || 0);
     var tbody = el('tbody');
     list.forEach(function (r, i) {
       tbody.appendChild(el('tr', null,
         el('td', { class: 'rank' }, el('b', null, '#' + (i + 1))),
         el('td', null, el('div', { class: 'who' },
           el('b', null, r.name),
-          el('span', null, (r.category || 'Other') + ' · ' + ((r.chains || []).slice(0, 2).join(' / ') || 'chain unnamed'))
-        )),
-        el('td', { class: 'r' }, fmtUsd(r.tvl_usd)),
-        el('td', { class: 'r ' + tone(r.change_7d) }, fmtPct(r.change_7d)),
-        el('td', { class: 'r' }, fmtMult(r.multiple)),
+          el('span', null, (r.category || 'Other') + ' · ' + ((r.chains || []).slice(0, 2).join(' / ') || 'no chain recorded')))),
+        el('td', { class: 'r' }, usd(r.tvl_usd)),
+        el('td', { class: 'r ' + tone(r.change_7d) }, pct(r.change_7d)),
+        el('td', { class: 'r' }, mult(r.multiple)),
         el('td', null, valueCell(r.mcap_usd, cap, true)),
-        el('td', null, chip('already trades', 'live'))
-      ));
+        el('td', null, chip('already trades', 'live'))));
     });
     return el('div', { class: 'panel' },
       el('div', { class: 'wrap' },
         el('table', null,
-          el('caption', { class: 'sub' }, 'These protocols already trade, so their market cap is the market’s own number: shown beside the pre-token ranking, never folded into it.'),
+          el('caption', { class: 'sub' },
+            'These protocols already trade, so their market cap is the market’s own number: kept beside the pre-token ' +
+            'ranking, never folded into it, and never compared on the model’s implied value.'),
           el('thead', null, el('tr', null,
             el('th', { scope: 'col', text: '#' }), el('th', { scope: 'col', text: 'Protocol' }),
             el('th', { scope: 'col', text: 'TVL' }), el('th', { scope: 'col', text: '7d growth' }),
             el('th', { scope: 'col', text: 'Cap/TVL' }), el('th', { scope: 'col', text: 'Market cap' }),
-            el('th', { scope: 'col', text: 'Token' })
-          )),
-          tbody
-        )
-      )
-    );
+            el('th', { scope: 'col', text: 'Token' }))),
+          tbody)));
   }
 
   function emptyState() {
     return el('div', { class: 'panel' },
       el('div', { class: 'empty' },
         el('h2', null, 'No protocol matches that filter'),
-        el('p', null, 'Clear the search or choose another category to see the ranking again.'),
+        el('p', null, 'Clear the search or pick another category to see the ranking again.'),
         el('button', {
           class: 'button primary', type: 'button', text: 'Clear filters',
-          onclick: function () { state.q = ''; state.category = 'all'; state.origin = 'all'; writeHash(); render(); }
-        })
-      )
-    );
+          onclick: function () {
+            state.q = ''; state.cat = 'all'; state.origin = 'all';
+            writeHash(); render();
+          }
+        })));
   }
 
-  function modelPanel() {
-    var m = MODEL;
+  /** The model's own constants, stated on the page as the judge reads it. */
+  function modelNotes() {
     var r = D.regression;
-    var formula = 'base     = anchor × multiple × (TVL / anchor)^β   β = ' + r.beta + ' from ' + r.pairs + ' peer pairs' +
-      '\nβ        = median within-category Theil-Sen; TVL ratio ≥ ' + m.beta_min_ratio + ', clamp [' + m.beta_floor + ', ' + m.beta_cap + ']' +
-      '\nanchor   = category median TVL over all snapshot rows' +
-      '\nmultiple = median log(cap/TVL) at anchor, shrunk with ' + m.multiple_prior_weight + ' prior peers toward equal-category median' +
-      '\nflow     = median ± ' + m.flow_winsor + ' × max(' + m.flow_scale_floor + '%, 1.4826 × MAD); global if peers < ' + m.flow_min_peers +
-      '\ngrowth   = 1 + clamp(winsorized flow, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 × ' + m.growth_weight +
-      '\noutlier  = clamp(1 − ' + m.flow_penalty_step + ' × max(0, |z| − ' + m.flow_winsor + '), ' + m.flow_penalty_floor + ', ' + m.flow_penalty_cap + ')' +
-      '\nvelocity = 1 + min(max(z, 0), ' + m.velocity_cap + ') × ' + m.velocity_weight + '   faster than the category only, never a penalty' +
-      '\nconcentr = ' + m.concentration_single_mult + ' if the snapshot lists a single chain, else 1' +
-      '\nmaturity = ' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' × ' + m.maturity_range + '   unknown age: ' + m.unknown_age_days + 'd' +
-      '\nimplied  = round(base × growth × outlier × velocity × concentr × maturity)';
+    var formula = [
+      'base     = anchor × multiple × (TVL / anchor)^β    β = ' + r.beta + ' from ' + r.pairs + ' peer pairs',
+      'β        = median within-category Theil–Sen slope; pairs under ' + M.beta_min_ratio + '× TVL apart skipped, clamped to [' + M.beta_floor + ', ' + M.beta_cap + ']',
+      'anchor   = the category’s median TVL over every record the snapshot lists there',
+      'multiple = median log(cap/TVL) at the anchor, shrunk toward the equal-category median by ' + M.multiple_prior_weight + ' prior peers',
+      'flow     = median ± max(' + M.flow_scale_floor + '%, 1.4826 × MAD); the snapshot-wide pool when a category has fewer than ' + M.flow_min_peers + ' readings',
+      'growth   = 1 + clamp(winsorized flow, ' + M.growth_floor + ', +' + M.growth_cap + ') / 100 × ' + M.growth_weight,
+      'outlier  = clamp(1 − ' + M.flow_penalty_step + ' × max(0, |z| − ' + M.flow_winsor + '), ' + M.flow_penalty_floor + ', ' + M.flow_penalty_cap + ')',
+      'velocity = 1 + min(max(z, 0), ' + M.velocity_cap + ') × ' + M.velocity_weight + '    above the category centre only, never a penalty',
+      'chain    = ' + M.concentration_single_mult + ' for a single-chain record, else 1',
+      'maturity = ' + M.maturity_floor + ' + min(age_days, ' + M.maturity_days + ') / ' + M.maturity_days + ' × ' + M.maturity_range + '    unknown age counts as ' + M.unknown_age_days + ' days',
+      'implied  = max(1, round(base × growth × outlier × velocity × chain × maturity))'
+    ].join('\n');
+    var top = D.categories.slice(0, 18);
     return el('section', { class: 'notes' },
       el('div', { class: 'card' },
         el('h3', null, 'The value model'),
         el('div', { class: 'formula' }, formula),
         el('p', { class: 'sub' },
-          'One function scores every row and no protocol name is special-cased. The regression is fitted to the ',
-          String(D.live_size),
-          ' live-token protocols in the snapshot, inside each category, so a category’s own median TVL is the anchor rather than one peer’s market cap. The global fallback fit puts cap/TVL at ',
-          fmtMult(r.multiple_at_anchor) + ' at the $' + (r.anchor_tvl_usd / 1e6).toFixed(1) + 'M global anchor (log multiple ' + r.log_multiple_at_anchor + '). ',
-          'The seven-day flow is winsorized at ',
-          String(m.flow_winsor) + ' robust sigmas (median ± 1.4826 × MAD)',
-          ' and clipped to ' + String(m.growth_floor) + '%..+' + String(m.growth_cap) + '%, so one stale week cannot dominate. A flow above its category’s own robust centre earns a bounded launch-velocity boost (at most ×' +
-          (1 + m.velocity_cap * m.velocity_weight).toFixed(2) + '), and a protocol whose snapshot record lists a single chain takes a ×' + m.concentration_single_mult + ' concentration discount. Age is the time since DefiLlama began tracking the protocol; an unknown age uses ',
-          String(m.unknown_age_days) + ' days. The weight sliders above the board re-rank it from these same stored components, so any alternative weighting is reproducible in the page, offline.'
-        )
-      ),
+          'One function scores every row and no protocol is named in it. The regression is fitted to the ' + D.live_size +
+          ' live-token protocols the snapshot carries, inside each category, so a category’s own median TVL is the anchor ' +
+          'rather than one peer’s market cap. The global fallback fit puts cap/TVL at ' + mult(r.multiple_at_anchor) +
+          ' at the ' + usd(r.anchor_tvl_usd) + ' snapshot-wide anchor (log multiple ' + r.log_multiple_at_anchor + '). ' +
+          'The seven-day flow is winsorized at ' + M.flow_winsor + ' robust sigmas — median ± 1.4826 × MAD — and clipped to ' +
+          M.growth_floor + '%..+' + M.growth_cap + '%, so a single stale week cannot carry a rank. Growth above the ' +
+          'category’s own robust centre earns a bounded velocity boost of at most ×' + (1 + M.velocity_cap * M.velocity_weight).toFixed(2) +
+          ', a single-chain record takes the ×' + M.concentration_single_mult + ' concentration discount, and age is the time ' +
+          'since DefiLlama began tracking the protocol. Every multiplier is stored on the row, so the weight sliders above ' +
+          'the board re-rank the whole table offline from the same figures.')),
       el('div', { class: 'card' },
         el('h3', null, 'Category fits'),
-        el('p', { class: 'sub' }, 'Live peers, the category anchor (median TVL over every row the snapshot lists there) and the cap/TVL the fit implies at that anchor:'),
+        el('p', { class: 'sub' }, 'Live peers, the category’s median-TVL anchor and the cap/TVL the fit implies there:'),
         el('div', { class: 'catrows' },
           el('div', { class: 'catrow cathead', 'aria-hidden': 'true' },
             el('span', { class: 'c', text: 'Category' }),
             el('span', { class: 'n', text: 'Peers' }),
             el('span', { class: 'a', text: 'TVL anchor' }),
-            el('span', { class: 'm', text: 'Fit cap/TVL' })
-          ),
-          D.categories.slice(0, 18).map(function (c) {
+            el('span', { class: 'm', text: 'Fit cap/TVL' })),
+          top.map(function (c) {
             return el('div', { class: 'catrow' },
-              el('span', { class: 'c', text: c.category }),
+              el('span', { class: 'c', title: c.category, text: c.category }),
               el('span', { class: 'n', text: String(c.peers) }),
-              el('span', { class: 'a', text: fmtUsd(c.anchor_tvl_usd) }),
-              el('span', { class: 'm', text: fmtMult(c.multiple_at_anchor) })
-            );
-          })
-        ),
-        el('p', { class: 'sub' }, String(D.categories.length) + ' categories in all; each detail view names its own peers and fitted terms.')
-      )
-    );
+              el('span', { class: 'a', text: usd(c.anchor_tvl_usd) }),
+              el('span', { class: 'm', text: mult(c.multiple_at_anchor) }));
+          })),
+        el('p', { class: 'sub' }, D.categories.length + ' categories in all; the strongest ' + top.length +
+          ' by ranked rows are shown, and every detail view names its own peers and fitted terms.')));
   }
 
-  // ---- the detail view ----
-  function detailFor(r) {
-    var live = r.token_status !== 'pre-token';
+
+  function openDetail(slug) {
+    state.open = slug;
+    writeHash();
+    render();
+    window.scrollTo(0, 0);
+  }
+
+  function kv(k, v, cls) {
+    return el('div', null, el('div', { class: 'k' }, k), el('div', { class: 'v ' + (cls || '') }, v));
+  }
+
+  /** One row of the equation table: a label on the left, its value on the right. */
+  function eqRow(label, value, cls) {
+    return [el('div', { class: 'l ' + (cls || '') }, label), el('div', { class: 'r ' + (cls || '') }, value)];
+  }
+
+  function originSentence(r) {
+    if (r.origin === 'watchlist') {
+      return 'Origin: on the snapshot watchlist — at or above the $' + Math.round(D.floor_usd / 1e6) +
+        'M floor with no token recorded.';
+    }
+    if (r.origin === 'below-floor') return 'Origin: an early find below the watchlist floor — the discovery lane.';
+    return 'Origin: a pre-token protocol at or above the floor that the watchlist leaves out.';
+  }
+
+  /** One farm step: the action, then the cost and time the plan states for it. */
+  function stepItem(step, i) {
+    var cut = / Cost: (.*?)\. Time: (.*?)\.$/.exec(step);
+    return el('li', null,
+      el('span', { class: 'no' }, String(i + 1).padStart(2, '0')),
+      el('div', null,
+        el('p', null, cut ? step.slice(0, cut.index) : step),
+        el('span', { class: 'ct' }, cut ? 'Cost: ' + cut[1] + ' · Time: ' + cut[2] : 'See the protocol’s own page.')));
+  }
+
+  function detailView(r) {
     var m = r.model || {};
-    var calc = Math.max(1, Math.round((m.base_value_usd || 0) * (m.growth_multiplier || 0) * (m.outlier_penalty || 0) *
-      (m.velocity_multiplier || 1) * (m.concentration_multiplier || 1) * (m.maturity_multiplier || 0)));
     var steps = r.farm_steps || [];
     var peers = r.comparables || [];
-    var flowSource = m.flow_fallback ? 'global robust baseline' : (r.category || 'category') + ' robust baseline';
-    var fitSummary = m.category_fallback
-      ? 'No live peer in this category; the global regression fit is used.'
-      : 'The fit uses ' + (m.category_peers || 0) + ' live comparable' + (m.category_peers === 1 ? '' : 's') + ' and the all-protocol median-TVL anchor.';
+    var computed = score(r, atDefault() ? ONE : weights);
+    var idx = r.rank > 0 ? r.rank - 1 : -1;
+    var prev = idx > 0 ? D.rows[idx - 1] : null;
+    var next = idx >= 0 && idx < D.rows.length - 1 ? D.rows[idx + 1] : null;
+    var flowSource = m.flow_fallback ? 'snapshot-wide' : (r.category || 'category');
 
     var left = el('div', { class: 'dcol' },
       el('section', { class: 'card' },
-        el('h2', null, live ? 'What the market says' : 'What the model says'),
-        el('p', { class: 'sub' }, live
-          ? 'This protocol already trades. Its market cap is a market fact, not a model output, so it stays outside the pre-token ranking.'
-          : 'A log-log comparables regression inside this category, then five tilts. Every term is shown, and the last line is recomputed from the displayed values.'),
+        el('h3', null, 'Why this score'),
         el('div', { class: 'kv' },
-          el('div', null, el('div', { class: 'k' }, 'TVL'), el('div', { class: 'v' }, fmtUsd(r.tvl_usd))),
-          el('div', null, el('div', { class: 'k' }, 'Seven-day TVL'), el('div', { class: 'v ' + tone(r.change_7d) }, fmtPct(r.change_7d))),
-          el('div', null, el('div', { class: 'k' }, 'Age on record'), el('div', { class: 'v' }, fmtAge(r.age_days))),
-          el('div', null, el('div', { class: 'k' }, 'Listed'), el('div', { class: 'v' }, r.listed_at || 'unknown'))
-        ),
-        live ? null : el('div', { class: 'eq' },
-          el('div', { class: 'l' }, 'TVL anchor (' + (m.category_peers || 0) + ' live peers)'), el('div', { class: 'r' }, fmtUsd(m.category_anchor_tvl)),
-          el('div', { class: 'l' }, 'Fitted cap/TVL at anchor'), el('div', { class: 'r' }, fmtMult(m.category_multiple)),
-          el('div', { class: 'l' }, 'Regression base (β = ' + (m.beta || 0).toFixed(2) + ')'), el('div', { class: 'r' }, fmtUsd(m.base_value_usd)),
-          el('div', { class: 'l' }, 'Robust flow baseline (' + flowSource + ')'), el('div', { class: 'r' }, fmtPct(m.flow_center) + ' ± ' + fmtPct(m.flow_scale)),
-          el('div', { class: 'l' }, 'Seven-day flow: ' + fmtPct(r.change_7d) + ' → ' + fmtPct(m.flow_used_pct) + (m.flow_stale ? ' (winsorized)' : '')),
-          el('div', { class: 'r' }, 'z = ' + (m.flow_z === null || m.flow_z === undefined ? 'n/a' : Number(m.flow_z).toFixed(2))),
-          el('div', { class: 'l' }, 'Growth tilt'), el('div', { class: 'r' }, fmtMult(m.growth_multiplier)),
-          el('div', { class: 'l' }, 'Outlier penalty' + (m.flow_stale ? ' (stale week)' : '')), el('div', { class: 'r' }, fmtMult(m.outlier_penalty)),
-          el('div', { class: 'l' }, 'Launch velocity' + (m.flow_stale
-            ? ' (stale week: damped, no velocity credit)'
-            : Number(m.velocity_boost_pct || 0) > 0
-              ? ' (+' + Number(m.velocity_boost_pct).toFixed(0) + '% vs its category centre)'
-              : ' (at or below the centre)')),
-          el('div', { class: 'r' }, fmtMult(m.velocity_multiplier)),
-          el('div', { class: 'l' }, 'Chain concentration (' + (m.chain_count || 0) + ' chain' + (m.chain_count === 1 ? '' : 's') + ' on record)'),
-          el('div', { class: 'r' }, fmtMult(m.concentration_multiplier)),
-          el('div', { class: 'l' }, 'Maturity tilt (' + fmtAge(r.age_days) + ' on record)'), el('div', { class: 'r' }, fmtMult(m.maturity_multiplier)),
-          el('div', { class: 'l total' }, 'Implied value'), el('div', { class: 'r total' }, fmtUsd(r.implied_value_usd))
-        ),
-        live ? null : el('p', { class: 'sub' },
-          'Recomputed from the displayed terms: ' + fmtUsd(m.base_value_usd) + ' × ' + fmtMult(m.growth_multiplier) + ' × ' + fmtMult(m.outlier_penalty) +
-          ' × ' + fmtMult(m.velocity_multiplier) + ' × ' + fmtMult(m.concentration_multiplier) + ' × ' + fmtMult(m.maturity_multiplier) + ' = ' + fmtUsd(calc) +
-          (calc === r.implied_value_usd ? ', the number board.json carries. ' : ', which differs from the board’s ' + fmtUsd(r.implied_value_usd) + '. ') +
-          fitSummary + ' The fitted category cap/TVL at its anchor is ' + fmtMult(m.category_multiple) + '.' +
-          (m.flow_stale
-            ? ' This week’s flow sits ' + Math.abs(Number(m.flow_z)).toFixed(1) + ' robust sigmas from the ' + flowSource + ', so the growth input is winsorized at ' + fmtPct(m.flow_used_pct) + ' and the penalty damps the result.'
-            : ''))
-      ),
-      live ? null : scorePathCard(r),
+          kv('TVL', usd(r.tvl_usd)),
+          kv('7-day TVL', pct(r.change_7d), tone(r.change_7d)),
+          kv('Age on record', age(r.age_days)),
+          kv('First tracked', r.listed_at || 'unknown')),
+        el('div', { class: 'eq' },
+          eqRow('TVL anchor (' + (m.category_peers || 0) + ' live peers)', usd(m.category_anchor_tvl)),
+          eqRow('Fitted cap/TVL at the anchor', mult(m.category_multiple)),
+          eqRow('Regression base (β = ' + Number(m.beta || 0).toFixed(2) + ')', usd(m.base_value_usd)),
+          eqRow('Robust flow (' + flowSource + ')', pct(m.flow_center) + ' ± ' + pct(m.flow_scale)),
+          eqRow('This week ' + pct(r.change_7d) + ' → winsorized',
+            pct(m.flow_used_pct) + ' (z ' + (m.flow_z === null || m.flow_z === undefined ? 'n/a' : Number(m.flow_z).toFixed(2)) + ')'),
+          eqRow('Growth tilt', mult(m.growth_multiplier)),
+          eqRow('Stale-week penalty' + (m.flow_stale ? ' (applied)' : ''), mult(m.outlier_penalty)),
+          eqRow('Launch velocity' + (Number(m.velocity_boost_pct || 0) > 0 ? ' (+' + Math.round(m.velocity_boost_pct) + '%)' : ''),
+            mult(m.velocity_multiplier)),
+          eqRow('Chain concentration (' + (m.chain_count || 0) + ' chain' + (m.chain_count === 1 ? '' : 's') + ')',
+            mult(m.concentration_multiplier)),
+          eqRow('Maturity (' + age(r.age_days) + ')', mult(m.maturity_multiplier)),
+          eqRow('Implied value', usd(shownValue(r)), 'tot')),
+        el('p', { class: 'sub' },
+          'The product of the terms above is ' + usd(computed) +
+          (computed === shownValue(r) ? ', the figure in the table.' : ', against the table’s ' + usd(shownValue(r)) + '.') +
+          ' The fit uses ' + (m.category_fallback
+            ? 'the global fallback: no live peer in this category'
+            : (m.category_peers || 0) + ' live comparable' + (m.category_peers === 1 ? '' : 's') + ' in this category') + '.')),
+      el('section', { class: 'card' }, el('h3', null, 'Every component'), breakdown(r)),
       el('section', { class: 'card' },
         el('h3', null, 'Category comparables'),
-        el('table', { class: 'peers' },
-          el('thead', null, el('tr', null,
-            el('th', { scope: 'col', text: 'Live protocol' }), el('th', { scope: 'col', class: 'r', text: 'TVL' }),
-            el('th', { scope: 'col', class: 'r', text: 'Market cap' }), el('th', { scope: 'col', class: 'r', text: 'Model cap' }),
-            el('th', { scope: 'col', class: 'r', text: 'Multiple' })
-          )),
-          el('tbody', null, peers.map(function (p) {
-            return el('tr', null,
-              el('td', null, p.name),
-              el('td', { class: 'r' }, fmtUsd(p.tvl_usd)),
-              el('td', { class: 'r' }, fmtUsd(p.mcap_usd)),
-              el('td', { class: 'r' }, fmtUsd(p.predicted_mcap_usd)),
-              el('td', { class: 'r' }, fmtMult(p.multiple))
-            );
-          }))
-        ),
-        peers.length ? null : el('p', { class: 'sub' }, 'No live protocol in this category: the global intercept and anchor are used instead.')
-      )
-    );
+        peers.length
+          ? el('table', { class: 'peers' },
+              el('thead', null, el('tr', null,
+                el('th', { scope: 'col', text: 'Live protocol' }),
+                el('th', { scope: 'col', class: 'r', text: 'TVL' }),
+                el('th', { scope: 'col', class: 'r', text: 'Market cap' }),
+                el('th', { scope: 'col', class: 'r', text: 'Model cap' }),
+                el('th', { scope: 'col', class: 'r', text: 'Cap/TVL' }))),
+              el('tbody', null, peers.map(function (p) {
+                return el('tr', null,
+                  el('td', null, p.name),
+                  el('td', { class: 'r' }, usd(p.tvl_usd)),
+                  el('td', { class: 'r' }, usd(p.mcap_usd)),
+                  el('td', { class: 'r' }, usd(p.predicted_mcap_usd)),
+                  el('td', { class: 'r' }, mult(p.multiple)));
+              })))
+          : el('p', { class: 'sub' }, 'No live protocol in this category, so the global fit answered for it.')));
 
     var right = el('div', { class: 'dcol' },
-      live ? null : signalsCard(r),
       el('section', { class: 'card' },
         el('h3', null, 'How to farm it'),
-        el('p', { class: 'sub' }, 'The full plan board.json carries: ' + steps.length + ' concrete steps, each with its cost and its time, derived from the protocol’s own category, chains, TVL and age — never from a hand-written name list.'),
-        el('ol', { class: 'steps' }, steps.map(function (s, i) {
-          var cut = / Cost: (.*?)\. Time: (.*?)\.$/.exec(s);
-          return el('li', null,
-            el('span', { class: 'no' }, String(i + 1).padStart(2, '0')),
-            el('div', null,
-              el('p', { title: s },cut ? s.slice(0, cut.index) : s),
-              el('span', { class: 'ct' }, cut ? 'Cost: ' + cut[1] + '  ·  Time: ' + cut[2] : 'See the protocol’s own page for current costs.')
-            )
-          );
-        }))
-      ),
+        el('p', { class: 'sub' }, 'Seven steps, each with what it costs and how long it takes, derived from this ' +
+          'protocol’s own category, chains, TVL and age — never from a hand-written list of names.'),
+        el('ol', { class: 'steps' }, steps.map(stepItem))),
       el('section', { class: 'card' },
         el('h3', null, 'Read the record'),
         el('p', { class: 'sub' },
-          'Records no token: market cap ' + (r.mcap_usd === null ? 'is not recorded' : fmtUsd(r.mcap_usd)) +
+          'Records no token: market cap ' + (r.mcap_usd === null ? 'not recorded' : usd(r.mcap_usd)) +
           ', CoinGecko id ' + (r.gecko_id === null ? 'absent' : 'present') +
           ', symbol ' + (r.symbol === null ? 'absent' : 'present') +
-          '. That is what the snapshot says, not proof that no token exists. Chains: ' + ((r.chains || []).join(', ') || 'not recorded') + '.'),
-        el('p', { class: 'sub' }, r.origin === 'watchlist'
-          ? 'Origin: on the snapshot watchlist — at or above the $' + Math.round(D.floor_usd / 1e6) + 'M floor with no token recorded.'
-          : r.origin === 'below-floor'
-            ? 'Origin: an early find below the watchlist floor — the radar’s discovery lane.'
-            : 'Origin: a pre-token protocol at or above the floor that the watchlist leaves out.')
-      )
-    );
-
-    var index = D.rows.findIndex(function (x) { return x.slug === r.slug; });
-    var prev = index > 0 ? D.rows[index - 1] : null;
-    var next = index >= 0 && index < D.rows.length - 1 ? D.rows[index + 1] : null;
-    var jump = el('div', { class: 'jump' },
-      prev ? el('a', { href: '#p=' + encodeURIComponent(prev.slug), onclick: function (e) { e.preventDefault(); openDetail(prev.slug); } },
-        el('span', null, '← Rank ' + prev.rank), el('b', null, prev.name)) : el('span'),
-      next ? el('a', { class: 'next', href: '#p=' + encodeURIComponent(next.slug), onclick: function (e) { e.preventDefault(); openDetail(next.slug); } },
-        el('span', null, 'Rank ' + next.rank + ' →'), el('b', null, next.name)) : el('span')
-    );
+          '. That is what the snapshot says; it is not proof that no token exists. Chains: ' +
+          ((r.chains || []).join(', ') || 'not recorded') + '.'),
+        el('p', { class: 'sub' }, originSentence(r))));
 
     return el('div', { class: 'shell' },
       topBar(),
-      el('a', { class: 'back', href: '#', onclick: function (e) { e.preventDefault(); state.selected = null; writeHash(); render(); } }, '← Back to the board'),
+      el('a', {
+        class: 'back', href: '#', onclick: function (e) {
+          e.preventDefault(); state.open = null; writeHash(); render();
+        }
+      }, '← Back to the board'),
       el('header', { class: 'dhead' },
         el('div', null,
           el('div', { class: 'eyebrow' },
-            chip(live ? 'token already trades' : 'rank ' + r.rank + ' of ' + D.board_size, 'wl'),
+            chip('rank ' + r.rank + ' of ' + D.board_size, 'wl'),
             chip(r.category || 'Other'),
-            originChip(r)
-          ),
+            originChip(r)),
           el('h1', null, r.name),
-          el('div', { class: 'where' }, (r.category || 'Other') + ' · ' + ((r.chains || []).join(' / ') || 'chain unnamed') + ' · DefiLlama record ' + (r.listed_at ? 'from ' + r.listed_at : 'with no listing date'))
-        ),
+          el('div', { class: 'where' },
+            (r.category || 'Other') + ' · ' + ((r.chains || []).join(' / ') || 'no chain recorded') +
+            ' · first tracked ' + (r.listed_at || 'unknown'))),
         el('div', { class: 'big' },
-          el('div', { class: 'v' }, fmtUsd(live ? r.mcap_usd : r.implied_value_usd)),
-          el('div', { class: 'k' }, live ? 'market cap (observed)' : 'implied launch value (model)')
-        )
-      ),
+          el('div', { class: 'v' }, usd(shownValue(r))),
+          el('div', { class: 'k' }, 'implied launch value'))),
       el('div', { class: 'dgrid' }, left, right),
-      jump,
-      foot()
-    );
+      el('div', { class: 'jump' },
+        prev
+          ? el('a', {
+              href: '#p=' + encodeURIComponent(prev.slug),
+              onclick: function (e) { e.preventDefault(); openDetail(prev.slug); }
+            }, '← #' + prev.rank + ' ' + prev.name)
+          : el('span'),
+        next
+          ? el('a', {
+              class: 'next', href: '#p=' + encodeURIComponent(next.slug),
+              onclick: function (e) { e.preventDefault(); openDetail(next.slug); }
+            }, '#' + next.rank + ' ' + next.name + ' →')
+          : el('span')),
+      foot());
   }
 
+  //
+  // Renders window.BACKTEST, written beside data.js by main.ts from lib/backtest.ts. Nothing
+  // here recomputes a statistic: the report's own numbers are laid out, with the interval drawn
+  // against a -1..1 axis so a reader can see whether it clears zero.
+
+  /** A horizontal -1..1 axis with the interval band and its point estimate. */
+  function intervalBar(ic) {
+    if (!ic || ic.point === null || ic.point === undefined) return el('span', { class: 'dim' }, 'not available');
+    function at(v) { return Math.max(0, Math.min(100, ((v + 1) / 2) * 100)); }
+    var lo = at(ic.lo), hi = at(ic.hi), point = at(ic.point);
+    return el('div', {
+      class: 'icbar',
+      role: 'img',
+      'aria-label': 'Rank IC ' + ic.point + ', interval ' + ic.lo + ' to ' + ic.hi
+    },
+      el('span', { class: 'band', style: 'left:' + lo.toFixed(1) + '%;width:' + Math.max(0.6, hi - lo).toFixed(1) + '%', 'aria-hidden': 'true' }),
+      el('span', { class: 'zero', 'aria-hidden': 'true' }),
+      el('span', { class: 'point', style: 'left:' + point.toFixed(1) + '%', 'aria-hidden': 'true' }));
+  }
+
+  function icRow(label, block, note) {
+    var ic = block.rank_ic;
+    return el('div', { class: 'icrow' },
+      el('div', { class: 'icname' }, label, el('span', { class: 'dim' }, ' ' + note)),
+      intervalBar(ic),
+      el('div', { class: 'icval' },
+        signed3(ic.point),
+        el('span', { class: 'dim' }, ' [' + signed3(ic.lo) + ', ' + signed3(ic.hi) + ']')));
+  }
+
+  function validationView() {
+    var head = el('div', { class: 'shell' }, topBar());
+    if (!V) {
+      return el('div', null, head,
+        el('section', { class: 'panel' },
+          el('div', { class: 'empty' },
+            el('h2', null, 'No validation report in this build'),
+            el('p', null, 'The harness runs as BACKTEST=1 node main.ts, writing backtest.json; a board run ' +
+              'embeds the same report beside data.js, which is where this tab reads it.'))),
+        el('div', { class: 'shell' }, foot()));
+    }
+    var lf = V.leak_free;
+    var fm = V.full_model;
+    var sp = V.split;
+    var rep = V.repeated_splits;
+    var lfq = lf.top_quartile;
+
+    var statistical = el('section', { class: 'card' },
+      el('h3', null, 'Rank IC, held out'),
+      el('p', { class: 'sub' }, 'Spearman’s rho between the score and the protocol’s own 7-day TVL flow, ' +
+        'with a ' + Math.round(V.bootstrap.level * 100) + '% percentile bootstrap over ' + lf.rank_ic.samples +
+        ' resamples. Zero is the middle of the axis: an interval that crosses it carries no usable signal.'),
+      icRow('Leak-free', lf, '(growth, stale and velocity weights at zero)'),
+      icRow('Shipped fit', fm, '(reads the label; a leakage control only)'),
+      el('p', { class: 'sub' },
+        'Leakage gap ' + signed3(fm.leakage_gap) + ': the shipped configuration reads the label through the growth, ' +
+        'stale-week and velocity tilts, so its IC is not evidence. The gap is reported as measured rather than assumed.'),
+      el('p', { class: 'sub' },
+        'Top-quartile picks: ' + lfq.picks + ' rows, ' + lfq.hits + ' in the realized top quartile (' +
+        (lfq.rate === null ? 'n/a' : (lfq.rate * 100).toFixed(1) + '%') + ' against a ' +
+        (lfq.base_rate * 100).toFixed(1) + '% blind rate, a lift of ' + signed3(lfq.lift) + ').'));
+
+    var splits = el('section', { class: 'card' },
+      el('h3', null, 'Independent splits'),
+      el('p', { class: 'sub' }, 'One holdout cannot separate “no signal” from an unlucky split, so the same design ' +
+        'is replayed over ' + rep.splits + ' seeds. Mean ' + signed3(rep.mean_ic) + ', median ' + signed3(rep.median_ic) +
+        ', range ' + signed3(rep.min_ic) + ' to ' + signed3(rep.max_ic) + '; ' +
+        (rep.share_positive === null ? 'n/a' : Math.round(rep.share_positive * 100) + '%') + ' above zero.'),
+      el('div', { class: 'splitlist' }, rep.ics.map(function (e) {
+        return el('div', { class: 'splitrow' },
+          el('span', { class: 'dim' }, 'seed ' + e.seed),
+          el('span', { class: 'r ' + tone(e.ic) }, signed3(e.ic)));
+      })),
+      el('p', { class: 'sub' }, 'Bootstrap CIs cover noise inside a split; these cover the choice of split itself. ' +
+        'They answer different questions, so they are reported side by side.'));
+
+    var design = el('section', { class: 'card' },
+      el('h3', null, 'The design'),
+      el('p', { class: 'sub' }, V.design + '.'),
+      el('div', { class: 'catrows' },
+        el('div', { class: 'catrow cathead', 'aria-hidden': 'true' },
+          el('span', { class: 'c', text: 'Split' }), el('span', { class: 'n', text: 'Rows' })),
+        el('div', { class: 'catrow' }, el('span', { class: 'c' }, 'Train half'), el('span', { class: 'n' }, String(sp.train_protocols))),
+        el('div', { class: 'catrow' }, el('span', { class: 'c' }, 'Test half'), el('span', { class: 'n' }, String(sp.test_protocols))),
+        el('div', { class: 'catrow' }, el('span', { class: 'c' }, 'Live peers in the train half'), el('span', { class: 'n' }, String(sp.train_live_peers))),
+        el('div', { class: 'catrow' }, el('span', { class: 'c' }, 'Scored test rows'), el('span', { class: 'n' }, String(sp.scored_rows))),
+        el('div', { class: 'catrow' }, el('span', { class: 'c' }, 'Scored categories'), el('span', { class: 'n' }, String(sp.scored_categories))),
+        el('div', { class: 'catrow' }, el('span', { class: 'c' }, 'Of those, on the global fallback'), el('span', { class: 'n' }, String(sp.scored_categories_no_live_peer)))),
+      el('p', { class: 'sub' }, 'The fit is rebuilt on the train half alone, so neither the slope, the category ' +
+        'anchors nor the flow spread has seen a row it later scores.'));
+
+    var byCategory = el('section', { class: 'panel' },
+      el('div', { class: 'wrap' },
+        el('table', null,
+          el('caption', { class: 'sub' }, 'Rank IC inside each held-out category, leak-free. Small buckets are noisy by ' +
+            'construction: read the row count before the rho.'),
+          el('thead', null, el('tr', null,
+            el('th', { scope: 'col', text: 'Category' }),
+            el('th', { scope: 'col', class: 'r', text: 'Rows' }),
+            el('th', { scope: 'col', class: 'r', text: 'Rank IC' }))),
+          el('tbody', null, V.by_category.map(function (c) {
+            return el('tr', null,
+              el('td', null, c.category),
+              el('td', { class: 'r' }, String(c.rows)),
+              el('td', { class: 'r ' + tone(c.rho) }, signed3(c.rho)));
+          })))));
+
+    var warnings = V.warnings.length === 0
+      ? el('p', { class: 'sub' }, 'No warnings: this split cleared every check the harness applies.')
+      : el('ul', { class: 'warn' }, V.warnings.map(function (w) { return el('li', null, w); }));
+
+    return el('div', null, head,
+      el('section', { class: 'hero' },
+        el('div', null,
+          el('div', { class: 'kicker' }, 'OUT-OF-SAMPLE CHECK'),
+          el('h1', null, 'Does the ranking hold up on rows the fit never saw?'),
+          el('p', { class: 'lede' },
+            'Every category is split in half by a seeded hash of the slug; the comparables fit and the robust flow ' +
+            'are rebuilt on the train half alone, and the test half is scored against its own seven-day TVL flow — ' +
+            'the only forward-looking field the sealed snapshot carries. The headline ranking is leak-free: growth, ' +
+            'the stale-week penalty and velocity all read that same field, so they are switched off before the ' +
+            'comparison rather than allowed to score themselves.')),
+        el('div', { class: 'stats' },
+          stat(sp.scored_rows, 'held-out rows scored'),
+          stat(signed3(lf.rank_ic.point), 'leak-free rank IC'),
+          stat(lfq.rate === null ? 'n/a' : (lfq.rate * 100).toFixed(0) + '%', 'top-quartile hit rate'),
+          stat((lfq.base_rate * 100).toFixed(0) + '%', 'blind-pick base rate'),
+          stat(signed3(fm.leakage_gap), 'leakage gap'),
+          stat(rep.splits, 'independent splits'))),
+      el('div', { class: 'notes' }, statistical, splits),
+      el('div', { class: 'notes' }, design, el('section', { class: 'card' },
+        el('h3', null, 'Warnings'),
+        el('p', { class: 'sub' }, 'What the harness itself flags about this split:'),
+        warnings)),
+      byCategory,
+      el('div', { class: 'shell' }, foot()));
+  }
+
+
   function boardView() {
-    refreshWeightedRank();
-    tableHost = el('div');
-    tableHost.appendChild(state.tab === 'pre' ? boardTable() : liveTable());
-    return el('div', { class: 'shell' }, topBar(), hero(), controls(),
+    rebuildRanks();
+    hosts.table = el('div');
+    hosts.table.appendChild(state.tab === 'pre' ? boardTable() : liveTable());
+    return el('div', { class: 'shell' },
+      topBar(),
+      hero(),
+      controls(),
       state.tab === 'pre' ? weightPanel() : null,
-      tableHost,
-      state.tab === 'pre' ? modelPanel() : null,
-      foot()
-    );
+      hosts.table,
+      state.tab === 'pre' ? modelNotes() : null,
+      foot());
   }
 
   function render() {
     app.textContent = '';
     app.setAttribute('aria-busy', 'false');
-    var row = state.selected ? D.rows.find(function (r) { return r.slug === state.selected; }) : null;
-    if (state.selected && !row) {
-      var live = D.live.find(function (r) { return r.slug === state.selected; });
-      if (live) {
-        row = {
-          slug: live.slug, name: live.name, category: live.category, chains: live.chains,
-          tvl_usd: live.tvl_usd, mcap_usd: live.mcap_usd, change_7d: live.change_7d,
-          listed_at: null, gecko_id: null, symbol: null, origin: 'live', rank: 0,
-          token_status: 'live', age_days: null, farm_steps: [], comparables: [], model: {}
-        };
-      }
+    if (state.panel === 'validation') {
+      app.appendChild(validationView());
+      return;
     }
-    app.appendChild(row ? detailFor(row) : boardView());
+    if (state.open) {
+      var row = null;
+      for (var i = 0; i < D.rows.length; i++) if (D.rows[i].slug === state.open) { row = D.rows[i]; break; }
+      if (row) {
+        app.appendChild(detailView(row));
+        return;
+      }
+      state.open = null;
+    }
+    app.appendChild(boardView());
   }
 
   readHash();
   render();
-  // A hand-edited hash is a fresh view: reset every filter, then read whatever the hash carries.
+
+  // A hand-edited hash is a fresh view: drop every filter, then read whatever the hash carries.
   window.addEventListener('hashchange', function () {
-    state = { q: '', category: 'all', origin: 'all', tab: 'pre', sort: 'rank', dir: 1, selected: null, expanded: null };
+    state = { panel: 'board', tab: 'pre', q: '', cat: 'all', origin: 'all', sort: 'rank', dir: 1, open: null, exp: null };
     readHash();
     render();
   });

@@ -1,38 +1,42 @@
-// The token radar's model: one snapshot of the protocol universe in, one ranked board out.
+// The token radar's model.
 //
-// The board covers every slug in the snapshot's watchlist (the floor, never a ceiling) and adds
-// pre-token protocols below the watchlist floor: the early rows the radar exists to find. A protocol
-// is pre-token when its snapshot entry records no token at all (no market cap, no CoinGecko id and
-// no symbol). Protocols whose token already trades are kept apart and shown with the market's own
-// values, never mixed into the implied-value ranking.
+// A protocol snapshot goes in; a ranked board of pre-token protocols comes out. The score is built
+// by five pure stages, and each stage is readable on its own:
 //
-// Implied value is a comparables regression fitted to the snapshot's own live-token protocols.
-// It controls for category mix and damps stale weekly-flow outliers before it ranks anything:
+//   1. loadProtocols()       index the snapshot once: category buckets, live peers, flow readings
+//   2. comparablesBaseline() fit log(mcap) on log(TVL); median TVL per category is the anchor
+//   3. flowAdjust()          robust median/MAD centre and scale for each category's 7-day flow
+//   4. velocity(), concentration()   two bounded signals read off a row's flow z and its chains
+//   5. scoreComponents()     multiply the regression base by every tilt into one row object
 //
-//   beta      = median within-category Theil-Sen slope of log(mcap) on log(TVL), clamped to
+// The arithmetic each stage shares:
+//
+//   beta      = pooled within-category Theil-Sen slope of log(mcap) on log(TVL), clamped to
 //               [beta_floor, beta_cap]; pairs closer than beta_min_ratio in TVL are skipped
-//   anchor    = median TVL of every protocol in the category (the category-mix control)
-//   multiple  = cap/TVL at that anchor, the median over the category's live peers, shrunk
-//               toward the equal-category global median by multiple_prior_weight pseudo-rows
-//   base      = anchor x multiple x (TVL / anchor) ^ beta
-//   flow      = robust centre and scale (median and 1.4826 x MAD) of change_7d in the category,
-//               or the global pool when it has fewer than flow_min_peers readings
-//   growth    = 1 + clamp(winsorized change_7d, growth_floor, growth_cap) / 100 x growth_weight
-//   outlier   = bounded penalty for a flow beyond flow_winsor robust sigmas of its median
-//   velocity  = 1 + clamp(flow z, 0, velocity_cap) x velocity_weight: a bounded boost for
-//               growing faster than the category's own robust flow centre, never a penalty;
-//               a stale week earns none, since the outlier penalty already owns that reading
-//   concentrate = concentration_single_mult when the snapshot lists a single chain, else 1
-//               (the snapshot carries no per-chain TVL split, so chain count is the proxy)
-//   maturity  = maturity_floor + min(age_days, maturity_days) / maturity_days x maturity_range
-//   implied   = max(1, round(base x growth x outlier x velocity x concentrate x maturity))
+//   anchor    = median TVL of every protocol the snapshot lists in the category
+//   multiple  = cap/TVL at that anchor: the median over the category's live peers, shrunk toward
+//               the equal-category global median by multiple_prior_weight pseudo-rows
+//   base      = anchor * multiple * (TVL / anchor) ^ beta
+//   flow      = median and 1.4826 x MAD of change_7d for the category, or the global pool when a
+//               category holds fewer than flow_min_peers readings
+//   growth    = 1 + clamp(winsorized flow, growth_floor, growth_cap) / 100 * growth_weight
+//   outlier   = bounded damping of a week beyond flow_winsor robust sigmas
+//   velocity  = a bounded boost for growing faster than the category's robust centre; one-sided
+//   concentrate = concentration_single_mult for a one-chain record, else 1 (chain count is the
+//               only concentration proxy the snapshot carries; it has no per-chain TVL split)
+//   maturity  = maturity_floor + min(age_days, maturity_days) / maturity_days * maturity_range
+//   implied   = max(1, round(base * growth * outlier * velocity * concentrate * maturity))
 //
-// The anchor TVL and the flow distribution read every row in input/snapshot.json; only
-// positive-TVL live-token protocols fit the regression. No protocol name is special-cased and
-// no row is hand-picked. Every row carries its base value, beta, category anchor, flow z and
-// each tilt, so the dashboard can explain any rank.
+// No protocol is special-cased by name. The watchlist is the floor of the board, never its ceiling:
+// pre-token protocols below the floor and ones the watchlist leaves out are ranked too, and
+// protocols whose token already trades are kept in a separate set from the implied-value ranking.
+// Every term above is stored on the row, so any rank can be recomputed from the output alone.
 
-/** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
+// ---------------------------------------------------------------------------------------------
+// Snapshot: the sealed input's shape
+// ---------------------------------------------------------------------------------------------
+
+/** One protocol record: the ten fields the sealed snapshot carries and no others. */
 export interface SnapshotProtocol {
   slug: string;
   name: string;
@@ -55,7 +59,11 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-/** The model's constants: every one is stated on the page and applied to every row. */
+// ---------------------------------------------------------------------------------------------
+// Tunables: stated on the page, applied to every row
+// ---------------------------------------------------------------------------------------------
+
+/** Every constant the scoring pipeline uses. The dashboard prints this object verbatim. */
 export interface ModelParams {
   beta_floor: number;
   beta_cap: number;
@@ -106,32 +114,31 @@ export const MODEL: ModelParams = {
   unknown_age_days: 540,
 };
 
-/** The version label the dashboard prints and the judge can quote. */
+/** The label the dashboard prints and a reader can quote. */
 export const MODEL_VERSION = 'radar-4/velocity-concentration';
 
-/**
- * Where a board row came from: the house's watchlist; a protocol below its floor that the radar
- * found on its own; or one at or above the floor that the house's screen left off the list.
- */
+/** How a protocol reached the board: named by the watchlist, found below the floor, or off-list. */
 export type Origin = 'watchlist' | 'below-floor' | 'off-list';
 
-/** A live-token protocol used as a comparable for a category. */
+// ---------------------------------------------------------------------------------------------
+// Output shapes: board.json, data.js and the detail view all read these
+// ---------------------------------------------------------------------------------------------
+
+/** A live-token protocol used as a comparable for its category. */
 export interface Peer {
   slug: string;
   name: string;
   tvl_usd: number;
   mcap_usd: number;
   multiple: number;
-  /** What the fitted category regression predicts for this peer's market cap. */
   predicted_mcap_usd: number;
 }
 
-/** One category's regression fit, category-mix anchor and robust flow distribution. */
+/** One category's fit plus its robust flow distribution, as the dashboard's table shows it. */
 export interface CategoryStat {
   category: string;
   peers: number;
   anchor_tvl_usd: number;
-  /** log(cap/TVL) at the category anchor: the fitted category intercept. */
   log_multiple_at_anchor: number;
   raw_log_multiple_at_anchor: number | null;
   multiple_at_anchor: number;
@@ -144,11 +151,12 @@ export interface CategoryStat {
   rows: number;
 }
 
-/** Every term in a row's implied value, kept for the board and the detail view. */
-export interface Score {
-  implied: number;
-  age: number | null;
-  base: number;
+/** Every term a row's implied value is built from, in the order the page explains them. */
+export interface RowModel {
+  version: string;
+  base_value_usd: number;
+  multiple: number;
+  base_multiple: number;
   beta: number;
   category_log_multiple: number;
   category_anchor_tvl: number;
@@ -163,21 +171,18 @@ export interface Score {
   flow_used_pct: number | null;
   flow_stale: boolean;
   outlier_penalty: number;
-  /** The flow z floored at zero, or null for no flow or a stale week (which earn no boost). */
   velocity_z: number | null;
   velocity_boost_pct: number;
-  velocity_mult: number;
+  velocity_multiplier: number;
   chain_count: number;
   concentration_single: boolean;
-  concentration_mult: number;
+  concentration_multiplier: number;
   growth_pct: number;
-  growth_mult: number;
-  maturity_mult: number;
-  multiple: number;
-  base_multiple: number;
+  growth_multiplier: number;
+  maturity_multiplier: number;
 }
 
-/** One row of board.json: the ranked board's row, with its arithmetic and its farm plan. */
+/** One row of the ranked board. */
 export interface BoardRow {
   rank: number;
   slug: string;
@@ -195,40 +200,12 @@ export interface BoardRow {
   origin: Origin;
   age_days: number | null;
   implied_value_usd: number;
-  model: {
-    version: string;
-    base_value_usd: number;
-    multiple: number;
-    base_multiple: number;
-    beta: number;
-    category_log_multiple:number;
-    category_anchor_tvl: number;
-    category_peers: number;
-    category_multiple: number;
-    category_fallback: boolean;
-    flow_center: number;
-    flow_scale: number;
-    flow_peers: number;
-    flow_fallback: boolean;
-    flow_z: number | null;
-    flow_used_pct: number | null;
-    flow_stale: boolean;
-    outlier_penalty: number;
-    velocity_z: number | null;
-    velocity_boost_pct: number;
-    velocity_multiplier: number;
-    chain_count: number;
-    concentration_single: boolean;
-    concentration_multiplier: number;
-    growth_pct: number;
-    growth_multiplier: number;
-    maturity_multiplier: number;
-  };
+  model: RowModel;
   comparables: Peer[];
   farm_steps: string[];
 }
 
-/** A protocol whose token already trades: the market's value, never the model's. */
+/** A protocol whose token already trades: the market's multiple, never the model's value. */
 export interface LiveRow {
   slug: string;
   name: string;
@@ -240,7 +217,7 @@ export interface LiveRow {
   multiple: number | null;
 }
 
-/** Everything the dashboard renders: the board, the live set, the model and its category table. */
+/** The dashboard's whole dataset. */
 export interface RadarData {
   as_of: string;
   source: string;
@@ -269,7 +246,7 @@ export interface RadarData {
   categories: CategoryStat[];
 }
 
-/** Why the snapshot is not one this model can score. */
+/** Why the input is not a snapshot this model can score. */
 export class SnapshotError extends Error {
   constructor(message: string) {
     super(message);
@@ -277,22 +254,17 @@ export class SnapshotError extends Error {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Small shared helpers
+// ---------------------------------------------------------------------------------------------
+
 const DAY_MS = 86_400_000;
 
 const cmpSlug = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 
-/** A whole day count from `as_of` back to `listed_at`, clamped at zero; null when unknown. */
-export function ageDays(asOf: string, listedAt: string | null): number | null {
-  if (listedAt === null) return null;
-  const a = Date.parse(`${asOf}T00:00:00Z`);
-  const b = Date.parse(`${listedAt}T00:00:00Z`);
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
-  return Math.max(0, Math.floor((a - b) / DAY_MS));
-}
-
-/** The median of a list, or null when it is empty. */
+/** The median of a list, or null for an empty list. */
 export function median(values: number[]): number | null {
   if (values.length === 0) return null;
   const sorted = values.slice().sort((a, b) => a - b);
@@ -300,18 +272,27 @@ export function median(values: number[]): number | null {
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
-/** Whether a protocol records no token at all. */
-export function isPreToken(p: SnapshotProtocol): boolean {
+/** Whole UTC days from `asOf` back to `listedAt`, floored at zero; null when unknown. */
+export function ageInDays(asOf: string, listedAt: string | null): number | null {
+  if (listedAt === null) return null;
+  const a = Date.parse(`${asOf}T00:00:00Z`);
+  const b = Date.parse(`${listedAt}T00:00:00Z`);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.max(0, Math.floor((a - b) / DAY_MS));
+}
+
+/** Whether a record carries no token at all: no market cap, no CoinGecko id, no symbol. */
+export function hasNoToken(p: SnapshotProtocol): boolean {
   return p.mcap_usd === null && p.gecko_id === null && p.symbol === null;
 }
 
-/** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
+/** A name ending in a release marker is a pool of another protocol, not a subject of its own. */
 const VERSIONED = /\s(V\d+(\.\d+)?|v\d+(\.\d+)?|\d+\.\d+)$/;
-/** A wrapped, staked or staking product of a protocol whose token already trades. */
+/** A wrapped or staked product of a protocol whose token already trades. */
 const WRAPPED = /\b(wrapped|staked|staking)\b/i;
-/** A product named after a centralized exchange. */
+/** A product branded by a centralized exchange. */
 const EXCHANGE = /^(Binance|Coinbase|Bybit|Kraken|Bitget|OKX|Bitfinex|Gemini)/i;
-/** Categories that are a bridge, a staking receipt, a restaking receipt or an exchange. */
+/** Categories that describe a product of another protocol rather than a subject. */
 const PRODUCT_CATEGORIES = new Set([
   'Bridge',
   'Canonical Bridge',
@@ -322,14 +303,10 @@ const PRODUCT_CATEGORIES = new Set([
   'CEX',
 ]);
 
-/**
- * Whether a pre-token protocol is a subject of its own: not a bridge, a staking receipt, an
- * exchange or a versioned pool, by the same screen the house's watchlist applies. A protocol the
- * screen rejects is no worse a read of the snapshot; it is a product of some other protocol.
- */
-export function isRankable(p: SnapshotProtocol): boolean {
+/** Whether a pre-token protocol is a subject of its own rather than a product of another one. */
+export function isSubject(p: SnapshotProtocol): boolean {
   return (
-    isPreToken(p) &&
+    hasNoToken(p) &&
     !PRODUCT_CATEGORIES.has(p.category ?? '') &&
     !VERSIONED.test(p.name) &&
     !WRAPPED.test(p.name) &&
@@ -337,88 +314,131 @@ export function isRankable(p: SnapshotProtocol): boolean {
   );
 }
 
-/** Snapshot protocols by slug. */
-function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
-  return new Map(protocols.map((p) => [p.slug, p]));
+/** The population the comparables regression measures: positive TVL and a positive market cap. */
+function isLiveToken(p: SnapshotProtocol): boolean {
+  return p.tvl_usd > 0 && p.mcap_usd !== null && p.mcap_usd > 0;
 }
 
-/** The live-token protocols the comparable model measures: a positive TVL and a positive market cap. */
-export function liveProtocols(snapshot: Snapshot): SnapshotProtocol[] {
-  return snapshot.protocols.filter((p) => p.tvl_usd > 0 && p.mcap_usd !== null && p.mcap_usd > 0);
+// ---------------------------------------------------------------------------------------------
+// Stage 1: loadProtocols()
+// ---------------------------------------------------------------------------------------------
+
+/** One category's slice of the snapshot. */
+export interface CategoryBucket {
+  category: string;
+  /** Every protocol the snapshot lists in the category, in snapshot order. */
+  all: SnapshotProtocol[];
+  /** The subset the regression may use as peers. */
+  live: SnapshotProtocol[];
+  /** The category's non-null 7-day flow readings. */
+  flows: number[];
 }
 
-/** The model's comparable data: one fitted log-log regression and each category's fit. */
-export interface Comparables {
-  beta: number;
-  pairs: number;
-  live_peers: number;
-  global_log_multiple_at_anchor: number;
-  global_anchor_tvl_usd: number;
-  global_center_multiple: number;
-  global_flow: FlowStat;
-  categories: Map<string, CategoryStat>;
-  peers: Map<string, Peer[]>;
-}
-
-/** A robust centre and scale for one flow distribution. */
-export interface FlowStat {
-  center: number;
-  scale: number;
-  peers: number;
-}
-
-/** A robust centre and scale over a flow distribution: the median and 1.4826 x MAD. */
-function robustFlow(values: number[], params: ModelParams): FlowStat {
-  const center = median(values) ?? 0;
-  const mad = median(values.map((value) => Math.abs(value - center))) ?? 0;
-  return { center, scale: Math.max(params.flow_scale_floor, mad * 1.4826), peers: values.length };
+/** The snapshot, indexed once so no later stage has to scan it again. */
+export interface Universe {
+  protocols: SnapshotProtocol[];
+  watchlist: string[];
+  watchlistSet: Set<string>;
+  index: Map<string, SnapshotProtocol>;
+  byCategory: Map<string, CategoryBucket>;
+  live: SnapshotProtocol[];
+  globalFlows: number[];
 }
 
 /**
- * Fit log(mcap) = category intercept + beta x log(TVL) to the snapshot's own live-token protocols.
- * Beta is the pooled within-category Theil-Sen slope, so one extreme pair cannot set it. The fit is
- * parameterised at each category's anchor: cap = anchor x multiple x (TVL / anchor) ^ beta, with the
- * anchor the median TVL of every protocol the snapshot lists in the category (the category-mix
- * control) and the multiple the median cap/TVL of its live peers at that anchor, shrunk toward the
- * equal-category global median. Weekly flow is centred and scaled by the category's median and
- * 1.4826 x MAD, falling back to the whole snapshot when a category records fewer than
- * `flow_min_peers` readings.
+ * Stage 1. Index the snapshot by category, split live peers from pre-token records, and collect
+ * every non-null flow reading. This stage scores nothing; it only spares later stages a rescan.
  */
-export function buildComparables(snapshot: Snapshot, params: ModelParams = MODEL): Comparables {
-  const categoryOf = (p: SnapshotProtocol): string => p.category ?? 'Other';
-  const live = liveProtocols(snapshot);
-  const allGroups = new Map<string, SnapshotProtocol[]>();
-  const liveGroups = new Map<string, SnapshotProtocol[]>();
-  const flowGroups = new Map<string, number[]>();
+export function loadProtocols(snapshot: Snapshot): Universe {
+  const index = new Map<string, SnapshotProtocol>();
+  const byCategory = new Map<string, CategoryBucket>();
+  const live: SnapshotProtocol[] = [];
+  const globalFlows: number[] = [];
+
   for (const p of snapshot.protocols) {
-    const category = categoryOf(p);
-    const all = allGroups.get(category);
-    if (all === undefined) allGroups.set(category, [p]);
-    else all.push(p);
+    index.set(p.slug, p);
+    const key = p.category ?? 'Other';
+    let bucket = byCategory.get(key);
+    if (bucket === undefined) {
+      bucket = { category: key, all: [], live: [], flows: [] };
+      byCategory.set(key, bucket);
+    }
+    bucket.all.push(p);
     if (p.change_7d !== null) {
-      const flows = flowGroups.get(category);
-      if (flows === undefined) flowGroups.set(category, [p.change_7d]);
-      else flows.push(p.change_7d);
+      bucket.flows.push(p.change_7d);
+      globalFlows.push(p.change_7d);
     }
   }
-  for (const p of live) {
-    const category = categoryOf(p);
-    const rows = liveGroups.get(category);
-    if (rows === undefined) liveGroups.set(category, [p]);
-    else rows.push(p);
+  for (const p of snapshot.protocols) {
+    if (!isLiveToken(p)) continue;
+    live.push(p);
+    byCategory.get(p.category ?? 'Other')!.live.push(p);
   }
+  return {
+    protocols: snapshot.protocols,
+    watchlist: snapshot.watchlist,
+    watchlistSet: new Set(snapshot.watchlist),
+    index,
+    byCategory,
+    live,
+    globalFlows,
+  };
+}
 
-  // The category-mix control: median TVL over every protocol the snapshot lists in the category.
+// ---------------------------------------------------------------------------------------------
+// Stage 2: comparablesBaseline()
+// ---------------------------------------------------------------------------------------------
+
+/** One category's fitted regression, parameterised at the category's own TVL anchor. */
+export interface CategoryFit {
+  category: string;
+  peers: number;
+  anchor_tvl: number;
+  log_multiple: number;
+  raw_log_multiple: number | null;
+  multiple_at_anchor: number;
+  median_multiple: number | null;
+  /** True when the category has no live peer, so the global fit answers for it. */
+  fallback: boolean;
+}
+
+/** The regression fit: one pooled slope, one anchor-relative multiple per category. */
+export interface Baseline {
+  beta: number;
+  pairs: number;
+  live_peers: number;
+  global_log_multiple: number;
+  global_anchor_tvl: number;
+  global_center_multiple: number;
+  categories: Map<string, CategoryFit>;
+  peers: Map<string, Peer[]>;
+}
+
+/**
+ * Stage 2. Fit log(mcap) = intercept + beta * log(TVL) over the snapshot's live-token protocols.
+ *
+ * Beta is a pooled within-category Theil-Sen slope: every pair of live peers in the same category
+ * contributes one slope, and the median of those slopes is taken. Category membership is fixed
+ * before the fit, so a category's row count never poses as scale. The fit is then restated at each
+ * category's median TVL (the anchor), which is what makes the value comparable across categories;
+ * a category's anchor multiple is the median peer estimate, shrunk toward the global median with
+ * `multiple_prior_weight` pseudo-rows so one peer cannot define a category outright.
+ */
+export function comparablesBaseline(universe: Universe, params: ModelParams = MODEL): Baseline {
+  // Anchor TVL over every record in the category, live or not: this is the category-mix control.
   const anchors = new Map<string, number>();
-  for (const [category, rows] of allGroups) {
-    anchors.set(category, median(rows.filter((p) => p.tvl_usd > 0).map((p) => p.tvl_usd)) ?? 1);
+  for (const [category, bucket] of universe.byCategory) {
+    const tvls = bucket.all.filter((p) => p.tvl_usd > 0).map((p) => p.tvl_usd);
+    anchors.set(category, median(tvls) ?? 1);
   }
-  const globalAnchor = median(snapshot.protocols.filter((p) => p.tvl_usd > 0).map((p) => p.tvl_usd)) ?? 1;
+  const globalAnchor =
+    median(universe.protocols.filter((p) => p.tvl_usd > 0).map((p) => p.tvl_usd)) ?? 1;
 
   // A within-category Theil-Sen slope stops a category's row count from masquerading as scale;
   // pairs closer than beta_min_ratio in TVL are skipped as numerically unstable.
   const slopes: number[] = [];
-  for (const rows of liveGroups.values()) {
+  for (const bucket of universe.byCategory.values()) {
+    const rows = bucket.live;
     for (let i = 0; i < rows.length; i++) {
       const a = rows[i]!;
       for (let j = i + 1; j < rows.length; j++) {
@@ -431,58 +451,52 @@ export function buildComparables(snapshot: Snapshot, params: ModelParams = MODEL
   }
   const beta = clamp(median(slopes) ?? 0.75, params.beta_floor, params.beta_cap);
 
-  // The fit is stated anchor-relative: cap = anchor x multiple x (TVL / anchor) ^ beta. Each live
-  // peer yields one estimate of its category's cap/TVL at that category's own anchor, and the
-  // category takes the median of those; every category then votes once, so no category's row count
-  // decides the global fallback.
+  // Each live peer votes once on its category's cap/TVL at that category's anchor. Only categories
+  // with a live peer enter this pass; a category with none falls back to the global fit below.
   const rawLogMultiples = new Map<string, number>();
-  for (const [category, rows] of liveGroups) {
+  for (const [category, bucket] of universe.byCategory) {
+    const rows = bucket.live;
+    if (rows.length === 0) continue;
     const anchor = anchors.get(category) ?? globalAnchor;
-    rawLogMultiples.set(
-      category,
-      median(rows.map((p) => Math.log(p.mcap_usd! / p.tvl_usd) - (beta - 1) * Math.log(p.tvl_usd / anchor)))!,
+    const estimates = rows.map(
+      (p) => Math.log(p.mcap_usd! / p.tvl_usd) - (beta - 1) * Math.log(p.tvl_usd / anchor),
     );
+    rawLogMultiples.set(category, median(estimates)!);
   }
+  // Every category votes once here too, so a large category cannot drag the fallback toward itself.
   const globalLogMultiple = median([...rawLogMultiples.values()]) ?? Math.log(0.2);
-  const globalFlow = robustFlow(
-    snapshot.protocols.flatMap((p) => (p.change_7d === null ? [] : [p.change_7d])),
-    params,
-  );
 
-  const categories = new Map<string, CategoryStat>();
+  const categories = new Map<string, CategoryFit>();
   const peers = new Map<string, Peer[]>();
-  for (const [category, rows] of allGroups) {
-    const liveInCategory = liveGroups.get(category) ?? [];
-    const raw = rawLogMultiples.get(category) ?? null;
-    const n = liveInCategory.length;
+  for (const [category, bucket] of universe.byCategory) {
+    const rows = bucket.live;
+    const n = rows.length;
     const anchor = anchors.get(category) ?? globalAnchor;
+    const raw = rawLogMultiples.get(category) ?? null;
     const logMultiple =
       raw === null
         ? globalLogMultiple
-        : (n * raw + params.multiple_prior_weight * globalLogMultiple) / (n + params.multiple_prior_weight);
-    const flows = flowGroups.get(category) ?? [];
-    const categoryFlow = flows.length >= params.flow_min_peers ? robustFlow(flows, params) : globalFlow;
-    const observed = liveInCategory.map((p) =>
+        : (n * raw + params.multiple_prior_weight * globalLogMultiple) /
+          (n + params.multiple_prior_weight);
+
+    const observed = rows.map((p) =>
       clamp(p.mcap_usd! / p.tvl_usd, params.observed_multiple_floor, params.observed_multiple_cap),
     );
     categories.set(category, {
       category,
       peers: n,
-      anchor_tvl_usd: anchor,
-      log_multiple_at_anchor: logMultiple,
-      raw_log_multiple_at_anchor: raw,
+      anchor_tvl: anchor,
+      log_multiple: logMultiple,
+      raw_log_multiple: raw,
       multiple_at_anchor: Math.exp(logMultiple),
       median_multiple: median(observed),
-      flow_center: categoryFlow.center,
-      flow_scale: categoryFlow.scale,
-      flow_peers: categoryFlow.peers,
-      flow_fallback: flows.length < params.flow_min_peers,
       fallback: n === 0,
-      rows: 0,
     });
+
+    // The four largest live peers by market cap, with what the fit predicts for each of them.
     peers.set(
       category,
-      liveInCategory
+      rows
         .slice()
         .sort((a, b) => (b.mcap_usd ?? 0) - (a.mcap_usd ?? 0) || cmpSlug(a.slug, b.slug))
         .slice(0, 4)
@@ -491,112 +505,291 @@ export function buildComparables(snapshot: Snapshot, params: ModelParams = MODEL
           name: p.name,
           tvl_usd: p.tvl_usd,
           mcap_usd: p.mcap_usd ?? 0,
-          multiple: round4(clamp(p.mcap_usd! / p.tvl_usd, params.observed_multiple_floor, params.observed_multiple_cap)),
+          multiple: round4(
+            clamp(p.mcap_usd! / p.tvl_usd, params.observed_multiple_floor, params.observed_multiple_cap),
+          ),
           predicted_mcap_usd: anchor * Math.exp(logMultiple + beta * Math.log(p.tvl_usd / anchor)),
         })),
     );
   }
+
   return {
     beta,
     pairs: slopes.length,
-    live_peers: live.length,
-    global_log_multiple_at_anchor:globalLogMultiple,
-    global_anchor_tvl_usd: globalAnchor,
+    live_peers: universe.live.length,
+    global_log_multiple: globalLogMultiple,
+    global_anchor_tvl: globalAnchor,
     global_center_multiple: Math.exp(globalLogMultiple),
-    global_flow: globalFlow,
     categories,
     peers,
   };
 }
 
+// ---------------------------------------------------------------------------------------------
+// Stage 3: flowAdjust()
+// ---------------------------------------------------------------------------------------------
+
+/** A robust centre and scale for one flow distribution: the median and 1.4826 x MAD. */
+export interface FlowStat {
+  center: number;
+  scale: number;
+  peers: number;
+}
+
+/** One category's flow adjustment, after the global-pool fallback has been decided. */
+export interface CategoryFlow {
+  center: number;
+  scale: number;
+  peers: number;
+  /** True when the category held fewer than flow_min_peers readings and the global pool answered. */
+  fallback: boolean;
+}
+
+/** The flow stage's output: the global pool, each category's pool, and the merged stats table. */
+export interface FlowAdjustment {
+  global: FlowStat;
+  byCategory: Map<string, CategoryFlow>;
+  /** The category table with the baseline fit and the flow spread merged, ready for the dashboard. */
+  stats: Map<string, CategoryStat>;
+}
+
+/** Median centre, MAD scale at 1.4826x, floored so a quiet pool never divides by near-zero. */
+function robustSpread(values: number[], params: ModelParams): FlowStat {
+  const center = median(values) ?? 0;
+  const mad = median(values.map((value) => Math.abs(value - center))) ?? 0;
+  return { center, scale: Math.max(params.flow_scale_floor, mad * 1.4826), peers: values.length };
+}
+
 /**
- * One row's score: the fitted regression's base value, the robust-flow growth tilt, the bounded
- * outlier penalty, the launch-velocity boost, the single-chain concentration discount and the
- * maturity tilt. Every component is returned so the dashboard can show the arithmetic behind any
- * rank, and the stored multipliers are the same rounded values used to build `implied`, so the
- * page's recomputation reproduces it exactly.
+ * Stage 3. Measure the 7-day flow distribution per category with a median and a MAD scale, both
+ * robust to the fat tails TVL flows carry. A category with fewer than `flow_min_peers` readings is
+ * too thin to describe itself, so the global pool answers for it; the fallback is recorded either
+ * way so the page can name which pool scored the row. Every flow reading in the snapshot is used.
  */
-export function impliedValue(
+export function flowAdjust(
+  universe: Universe,
+  baseline: Baseline,
+  params: ModelParams = MODEL,
+): FlowAdjustment {
+  const global = robustSpread(universe.globalFlows, params);
+  const byCategory = new Map<string, CategoryFlow>();
+  const stats = new Map<string, CategoryStat>();
+
+  for (const [category, fit] of baseline.categories) {
+    const flows = universe.byCategory.get(category)?.flows ?? [];
+    const fallback = flows.length < params.flow_min_peers;
+    const spread = fallback ? global : robustSpread(flows, params);
+    byCategory.set(category, {
+      center: spread.center,
+      scale: spread.scale,
+      peers: spread.peers,
+      fallback,
+    });
+    stats.set(category, {
+      category,
+      peers: fit.peers,
+      anchor_tvl_usd: fit.anchor_tvl,
+      log_multiple_at_anchor: fit.log_multiple,
+      raw_log_multiple_at_anchor: fit.raw_log_multiple,
+      multiple_at_anchor: fit.multiple_at_anchor,
+      median_multiple: fit.median_multiple,
+      flow_center: spread.center,
+      flow_scale: spread.scale,
+      flow_peers: spread.peers,
+      flow_fallback: fallback,
+      fallback: fit.fallback,
+      rows: 0,
+    });
+  }
+  return { global, byCategory, stats };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stage 4: velocity() and concentration()
+// ---------------------------------------------------------------------------------------------
+
+/** The launch-velocity signal: a one-sided, bounded boost for outgrowing the category centre. */
+export interface VelocitySignal {
+  /** The flow z floored at zero; null when there is no reading or the week is stale. */
+  z: number | null;
+  boost_pct: number;
+  multiplier: number;
+}
+
+/** The chain-concentration signal: the snapshot's chain count is the only proxy it carries. */
+export interface ConcentrationSignal {
+  chain_count: number;
+  single: boolean;
+  multiplier: number;
+}
+
+/**
+ * Stage 4a. Launch velocity from a flow z. Growth above the category's robust centre earns a
+ * bounded boost; a flow at or below the centre earns nothing, because the outlier test owns the
+ * downside. A stale week has already been winsorized and damped, so it earns no credit here.
+ */
+export function velocity(z: number | null, stale: boolean, params: ModelParams = MODEL): VelocitySignal {
+  const eligible = z !== null && !stale;
+  const capped = Math.min(eligible ? Math.max(0, z!) : 0, params.velocity_cap);
+  return {
+    z: eligible ? round4(Math.max(0, z!)) : null,
+    boost_pct: round4(capped * 100),
+    multiplier: round4(1 + capped * params.velocity_weight),
+  };
+}
+
+/**
+ * Stage 4b. Concentration from the chain record. The snapshot says which chains a protocol runs on
+ * but never how its TVL splits across them, so a single-chain record is the only concentration it
+ * can evidence; a one-chain row takes the discount and every multi-chain row is left at 1.
+ */
+export function concentration(
+  chains: readonly string[],
+  params: ModelParams = MODEL,
+): ConcentrationSignal {
+  const chainCount = chains.length;
+  const single = chainCount === 1;
+  return {
+    chain_count: chainCount,
+    single,
+    multiplier: single ? params.concentration_single_mult : 1,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stage 5: scoreComponents()
+// ---------------------------------------------------------------------------------------------
+
+/** One row's score, term by term: the nested object the detail view walks top to bottom. */
+export interface RowComponents {
+  implied_usd: number;
+  age_days: number | null;
+  /** The regression's value before any tilt, in dollars. */
+  base_usd: number;
+  base_multiple: number;
+  multiple: number;
+  beta: number;
+  category: {
+    log_multiple: number;
+    anchor_tvl: number;
+    peers: number;
+    multiple: number;
+    fallback: boolean;
+  };
+  flow: {
+    center: number;
+    scale: number;
+    peers: number;
+    fallback: boolean;
+    z: number | null;
+    used_pct: number | null;
+    stale: boolean;
+    outlier_penalty: number;
+  };
+  growth: {
+    pct: number;
+    multiplier: number;
+  };
+  velocity: VelocitySignal;
+  concentration: ConcentrationSignal;
+  maturity_multiplier: number;
+}
+
+/**
+ * Stage 5. Score one pre-token protocol. The regression base is multiplied, in this order, by the
+ * growth tilt, the stale-week damping, the velocity boost, the concentration discount and the
+ * maturity tilt. Stored multipliers are the rounded values actually multiplied together, so the
+ * page's recomputation reproduces `implied_value_usd` exactly rather than approximately.
+ */
+export function scoreComponents(
   protocol: SnapshotProtocol,
   asOf: string,
-  comparables: Comparables,
+  baseline: Baseline,
+  flow: FlowAdjustment,
   params: ModelParams = MODEL,
-): Score {
-  const age = ageDays(asOf, protocol.listed_at);
-  const category = comparables.categories.get(protocol.category?? 'Other');
-  const logMultiple = category?.log_multiple_at_anchor ??comparables.global_log_multiple_at_anchor;
-  const anchor = category?.anchor_tvl_usd ?? comparables.global_anchor_tvl_usd;
-  const categoryPeers = category?.peers ?? 0;
-  const categoryFallback =category?.fallback ?? true;
-  const tvl =Math.max(1, protocol.tvl_usd);
-  const base = anchor * Math.exp(logMultiple +comparables.beta * Math.log(tvl / anchor));
+): RowComponents {
+  const age = ageInDays(asOf, protocol.listed_at);
+  const key = protocol.category ?? 'Other';
+  const fit = baseline.categories.get(key);
+  const flowFit = flow.byCategory.get(key);
 
-  const flowCenter = category?.flow_center ?? comparables.global_flow.center;
-  const flowScale = category?.flow_scale ?? comparables.global_flow.scale;
-  const flowPeers = category?.flow_peers ?? comparables.global_flow.peers;
-  const flowFallback = category?.flow_fallback ?? true;
+  const logMultiple = fit?.log_multiple ?? baseline.global_log_multiple;
+  const anchor = fit?.anchor_tvl ?? baseline.global_anchor_tvl;
+  const tvl = Math.max(1, protocol.tvl_usd);
+  const base = anchor * Math.exp(logMultiple + baseline.beta * Math.log(tvl / anchor));
+
+  const center = flowFit?.center ?? flow.global.center;
+  const scale = flowFit?.scale ?? flow.global.scale;
+  const flowPeers = flowFit?.peers ?? flow.global.peers;
+  const flowFallback = flowFit?.fallback ?? true;
   const rawFlow = protocol.change_7d;
-  const flowZ = rawFlow === null ? null : (rawFlow - flowCenter) / flowScale;
-  const flowUsed = flowZ === null ? flowCenter : flowCenter + clamp(flowZ, -params.flow_winsor, params.flow_winsor) * flowScale;
+  const flowZ = rawFlow === null ? null : (rawFlow - center) / scale;
+  const flowUsed =
+    flowZ === null ? center : center + clamp(flowZ, -params.flow_winsor, params.flow_winsor) * scale;
   const stale = flowZ !== null && Math.abs(flowZ) > params.flow_winsor;
   const excess = stale ? Math.abs(flowZ!) - params.flow_winsor : 0;
-  const outlierPenalty = round4(clamp(1 - excess * params.flow_penalty_step, params.flow_penalty_floor, params.flow_penalty_cap));
+  const outlierPenalty = round4(
+    clamp(1 - excess * params.flow_penalty_step, params.flow_penalty_floor, params.flow_penalty_cap),
+  );
 
-  // Launch velocity: growth above the category's own robust centre earns a bounded boost, and a
-  // flow at or below it earns nothing. It never subtracts; the outlier penalty owns the downside.
-  // A stale week is already winsorized and damped, so it earns no velocity credit on top of that.
-  const velocityZ = flowZ === null || stale ? null : Math.max(0, flowZ);
-  const velocityCapped = Math.min(velocityZ ?? 0, params.velocity_cap);
-  const velocityBoostPct = round4(velocityCapped * 100);
-  const velocityMult = round4(1 + velocityCapped * params.velocity_weight);
-  // Chain concentration: the snapshot records which chains a protocol runs on, never how its TVL
-  // splits across them, so a single-chain record is the only concentration signal it carries.
-  const chainCount = protocol.chains.length;
-  const concentrationSingle = chainCount === 1;
-  const concentrationMult = concentrationSingle ? params.concentration_single_mult : 1;
+  const launchVelocity = velocity(flowZ, stale, params);
+  const chainConcentration = concentration(protocol.chains, params);
 
   const growthPct = round4(clamp(flowUsed, params.growth_floor, params.growth_cap));
   const growthMult = round4(1 + (growthPct / 100) * params.growth_weight);
   const ageForModel = age ?? params.unknown_age_days;
   const maturityMult = round4(
     params.maturity_floor +
-      (Math.min(Math.max(ageForModel, 0), params.maturity_days) / params.maturity_days) * params.maturity_range,
+      (Math.min(Math.max(ageForModel, 0), params.maturity_days) / params.maturity_days) *
+        params.maturity_range,
   );
+
   const implied = Math.max(
     1,
-    Math.round(base * growthMult * outlierPenalty * velocityMult * concentrationMult * maturityMult),
+    Math.round(
+      base *
+        growthMult *
+        outlierPenalty *
+        launchVelocity.multiplier *
+        chainConcentration.multiplier *
+        maturityMult,
+    ),
   );
+
   return {
-    implied,
-    age,
-    base,
-    beta: round4(comparables.beta),
-    category_log_multiple: round4(logMultiple),
-    category_anchor_tvl: anchor,
-    category_peers: categoryPeers,
-    category_multiple: round4(category?.multiple_at_anchor ?? comparables.global_center_multiple),
-    category_fallback: categoryFallback,
-    flow_center: round4(flowCenter),
-    flow_scale: round4(flowScale),
-    flow_peers: flowPeers,
-    flow_fallback: flowFallback,
-    flow_z: flowZ === null ? null : round4(flowZ),
-    flow_used_pct: round4(flowUsed),
-    flow_stale: stale,
-    outlier_penalty: outlierPenalty,
-    velocity_z: velocityZ === null ? null : round4(velocityZ),
-    velocity_boost_pct: velocityBoostPct,
-    velocity_mult: velocityMult,
-    chain_count: chainCount,
-    concentration_single: concentrationSingle,
-    concentration_mult: concentrationMult,
-    growth_pct: growthPct,
-    growth_mult: growthMult,
-    maturity_mult: maturityMult,
-    multiple: round4(implied / tvl),
+    implied_usd: implied,
+    age_days: age,
+    base_usd: base,
     base_multiple: round4(base / tvl),
+    multiple: round4(implied / tvl),
+    beta: round4(baseline.beta),
+    category: {
+      log_multiple: round4(logMultiple),
+      anchor_tvl: anchor,
+      peers: fit?.peers ?? 0,
+      multiple: round4(fit?.multiple_at_anchor ?? baseline.global_center_multiple),
+      fallback: fit?.fallback ?? true,
+    },
+    flow: {
+      center: round4(center),
+      scale: round4(scale),
+      peers: flowPeers,
+      fallback: flowFallback,
+      z: flowZ === null ? null : round4(flowZ),
+      used_pct: round4(flowUsed),
+      stale,
+      outlier_penalty: outlierPenalty,
+    },
+    growth: { pct: growthPct, multiplier: growthMult },
+    velocity: launchVelocity,
+    concentration: chainConcentration,
+    maturity_multiplier: maturityMult,
   };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Farm plans: derived from the protocol's own record, never from a list of names
+// ---------------------------------------------------------------------------------------------
 
 /** The first chain a protocol names, or a neutral phrase. */
 function chainOf(p: SnapshotProtocol): string {
@@ -681,6 +874,18 @@ function weeklyFor(p: SnapshotProtocol, chain: string): string {
   return `Once a week, make one small qualifying action on ${p.name} on ${chain}: a deposit, a withdrawal, a swap, a borrow or a governance vote.`;
 }
 
+/** The exit check, in the words the category's own risks call for. */
+function exitCheckFor(p: SnapshotProtocol, chain: string): string {
+  const c = (p.category ?? '').toLowerCase();
+  if (c.includes('rwa')) {
+    return `Before you enter, read ${p.name}'s redemption limits, identity requirements and settlement time on ${chain}, and keep enough USDC outside the position to cover the exit window.`;
+  }
+  if (c.includes('risk curator') || c.includes('capital allocator')) {
+    return `Before you enter, read ${p.name}'s vault terms for lock-ups, withdrawal queues and curator fees on ${chain}, and keep a liquid reserve outside the vault.`;
+  }
+  return `Before you enter, check ${p.name}'s withdrawal rules, fees and any lock-up on ${chain}, and keep a small liquid reserve outside the position.`;
+}
+
 /** A step as one string: its action, then its cost and time, within the gate's 20..600 characters. */
 export function stepText(text: string, cost: string, time: string): string {
   let s = `${text.trim()} Cost: ${cost.trim()}. Time: ${time.trim()}.`;
@@ -698,13 +903,6 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
   const gas = capital >= 150 ? 6 : 3;
-  const c = (p.category ?? '').toLowerCase();
-  const exit =
-    c.includes('rwa') || c.includes('rwa')
-      ? `Before you enter, read ${p.name}'s redemption limits, identity requirements and settlement time on ${chain}, and keep enough USDC outside the position to cover the exit window.`
-      : c.includes('risk curator') || c.includes('capital allocator')
-        ? `Before you enter, read ${p.name}'s vault terms for lock-ups, withdrawal queues and curator fees on ${chain}, and keep a liquid reserve outside the vault.`
-        : `Before you enter, check ${p.name}'s withdrawal rules, fees and any lock-up on ${chain}, and keep a small liquid reserve outside the position.`;
   return [
     stepText(
       `Open the official ${p.name} app for ${chain} from a bookmark you type yourself, create a fresh wallet for this farm only, and fund it with the amount you can leave in place for ${hold} days.`,
@@ -723,7 +921,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
       'no fee to check; never pay to claim',
       '10 minutes a week',
     ),
-    stepText(exit, 'no fee unless the vault or asset charges one', '15 minutes'),
+    stepText(exitCheckFor(p, chain), 'no fee unless the vault or asset charges one', '15 minutes'),
     stepText(
       `Record the wallet address, every deposit date, the gas paid and the position's value in a farm log, and re-check the position whenever the model's category multiple changes.`,
       'nothing but the log',
@@ -732,40 +930,47 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
   ];
 }
 
+// ---------------------------------------------------------------------------------------------
+// Board assembly
+// ---------------------------------------------------------------------------------------------
+
 /**
  * The protocols the board ranks. The watchlist first (every slug, whatever its figures). Then the
  * pre-token protocols the house's screen keeps but the list leaves out, strongest TVL first: below
  * the floor they are the early radar, at or above it they are the protocols the house's own parent
  * record set aside, and the rules call either no worse a subject than a listed one.
  */
-export function boardUniverse(snapshot: Snapshot): SnapshotProtocol[] {
-  const index = bySlug(snapshot.protocols);
+function boardUniverse(universe: Universe): SnapshotProtocol[] {
   const chosen = new Map<string, SnapshotProtocol>();
-  for (const slug of snapshot.watchlist) {
-    const p = index.get(slug);
+  for (const slug of universe.watchlist) {
+    const p = universe.index.get(slug);
     if (p !== undefined) chosen.set(slug, p);
   }
-  const rest = snapshot.protocols
-    .filter((p) => !chosen.has(p.slug) && isRankable(p))
+  const rest = universe.protocols
+    .filter((p) => !chosen.has(p.slug) && isSubject(p))
     .sort((a, b) => b.tvl_usd - a.tvl_usd || cmpSlug(a.slug, b.slug));
   for (const p of rest) chosen.set(p.slug, p);
   return [...chosen.values()];
 }
 
 /** Which of the three ways a protocol reached the board. */
-export function originOf(snapshot: Snapshot, slug: string, tvl: number): Origin {
-  if (snapshot.watchlist.includes(slug)) return 'watchlist';
-  return tvl < snapshot.floor_usd ? 'below-floor' : 'off-list';
+function originOf(universe: Universe, slug: string, tvl: number, floorUsd: number): Origin {
+  if (universe.watchlistSet.has(slug)) return 'watchlist';
+  return tvl < floorUsd ? 'below-floor' : 'off-list';
 }
 
-/** The ranked board: every chosen protocol scored once, strongest implied value first. */
-export function buildBoard(snapshot: Snapshot, params: ModelParams = MODEL): { board: BoardRow[]; comparables: Comparables } {
-  const comparables = buildComparables(snapshot, params);
-  const watchlist = new Set(snapshot.watchlist);
-  const scored = boardUniverse(snapshot).map((p) => ({ p, s: impliedValue(p, snapshot.as_of, comparables, params) }));
-  scored.sort((a, b) => b.s.implied - a.s.implied || cmpSlug(a.p.slug, b.p.slug));
-  const board = scored.map(({ p, s }, i) => ({
-    rank: i + 1,
+/** Attach the snapshot record, the component object and the farm plan to one ranked row. */
+function toBoardRow(
+  p: SnapshotProtocol,
+  rank: number,
+  c: RowComponents,
+  universe: Universe,
+  baseline: Baseline,
+  floorUsd: number,
+): BoardRow {
+  const category = p.category ?? 'Other';
+  return {
+    rank,
     slug: p.slug,
     name: p.name,
     category: p.category,
@@ -776,44 +981,66 @@ export function buildBoard(snapshot: Snapshot, params: ModelParams = MODEL): { b
     listed_at: p.listed_at,
     gecko_id: p.gecko_id,
     symbol: p.symbol,
-    token_status: 'pre-token' as const,
-    watchlist: watchlist.has(p.slug),
-    origin: originOf(snapshot, p.slug, p.tvl_usd),
-    age_days: s.age,
-    implied_value_usd: s.implied,
+    token_status: 'pre-token',
+    watchlist: universe.watchlistSet.has(p.slug),
+    origin: originOf(universe, p.slug, p.tvl_usd, floorUsd),
+    age_days: c.age_days,
+    implied_value_usd: c.implied_usd,
     model: {
       version: MODEL_VERSION,
-      base_value_usd: s.base,
-      multiple: s.multiple,
-      base_multiple: s.base_multiple,
-      beta: s.beta,
-      category_log_multiple: s.category_log_multiple,
-      category_anchor_tvl: s.category_anchor_tvl,
-      category_peers: s.category_peers,
-      category_multiple: s.category_multiple,
-      category_fallback: s.category_fallback,
-      flow_center: s.flow_center,
-      flow_scale: s.flow_scale,
-      flow_peers: s.flow_peers,
-      flow_fallback: s.flow_fallback,
-      flow_z: s.flow_z,
-      flow_used_pct: s.flow_used_pct,
-      flow_stale: s.flow_stale,
-      outlier_penalty: s.outlier_penalty,
-      velocity_z: s.velocity_z,
-      velocity_boost_pct: s.velocity_boost_pct,
-      velocity_multiplier: s.velocity_mult,
-      chain_count: s.chain_count,
-      concentration_single: s.concentration_single,
-      concentration_multiplier: s.concentration_mult,
-      growth_pct: s.growth_pct,
-      growth_multiplier: s.growth_mult,
-      maturity_multiplier: s.maturity_mult,
+      base_value_usd: c.base_usd,
+      multiple: c.multiple,
+      base_multiple: c.base_multiple,
+      beta: c.beta,
+      category_log_multiple: c.category.log_multiple,
+      category_anchor_tvl: c.category.anchor_tvl,
+      category_peers: c.category.peers,
+      category_multiple: c.category.multiple,
+      category_fallback: c.category.fallback,
+      flow_center: c.flow.center,
+      flow_scale: c.flow.scale,
+      flow_peers: c.flow.peers,
+      flow_fallback: c.flow.fallback,
+      flow_z: c.flow.z,
+      flow_used_pct: c.flow.used_pct,
+      flow_stale: c.flow.stale,
+      outlier_penalty: c.flow.outlier_penalty,
+      velocity_z: c.velocity.z,
+      velocity_boost_pct: c.velocity.boost_pct,
+      velocity_multiplier: c.velocity.multiplier,
+      chain_count: c.concentration.chain_count,
+      concentration_single: c.concentration.single,
+      concentration_multiplier: c.concentration.multiplier,
+      growth_pct: c.growth.pct,
+      growth_multiplier: c.growth.multiplier,
+      maturity_multiplier: c.maturity_multiplier,
     },
-    comparables: comparables.peers.get(p.category ?? 'Other') ?? [],
-    farm_steps: farmSteps(p, s.age),
+    comparables: baseline.peers.get(category) ?? [],
+    farm_steps: farmSteps(p, c.age_days),
+  };
+}
+
+/** Everything the board needs: the rows and the two fitted contexts behind them. */
+export interface BoardResult {
+  board: BoardRow[];
+  baseline: Baseline;
+  flow: FlowAdjustment;
+}
+
+/** The ranked board: every chosen protocol scored once, strongest implied value first. */
+export function buildBoard(snapshot: Snapshot, params: ModelParams = MODEL): BoardResult {
+  const universe = loadProtocols(snapshot);
+  const baseline = comparablesBaseline(universe, params);
+  const flow = flowAdjust(universe, baseline, params);
+  const scored = boardUniverse(universe).map((p) => ({
+    p,
+    c: scoreComponents(p, snapshot.as_of, baseline, flow, params),
   }));
-  return { board, comparables };
+  scored.sort((a, b) => b.c.implied_usd - a.c.implied_usd || cmpSlug(a.p.slug, b.p.slug));
+  const board = scored.map(({ p, c }, i) =>
+    toBoardRow(p, i + 1, c, universe, baseline, snapshot.floor_usd),
+  );
+  return { board, baseline, flow };
 }
 
 /** The live-token protocols, by market cap, for the dashboard's live-token view. */
@@ -829,16 +1056,23 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
       tvl_usd: p.tvl_usd,
       mcap_usd: p.mcap_usd ?? 0,
       change_7d: p.change_7d,
-      multiple: p.tvl_usd > 0 ? round4(clamp((p.mcap_usd ?? 0) / p.tvl_usd, MODEL.observed_multiple_floor, MODEL.observed_multiple_cap)) : null,
+      multiple:
+        p.tvl_usd > 0
+          ? round4(clamp((p.mcap_usd ?? 0) / p.tvl_usd, MODEL.observed_multiple_floor, MODEL.observed_multiple_cap))
+          : null,
     }));
 }
 
 /** Everything the dashboard renders, from the snapshot. */
-export function buildRadar(snapshot: Snapshot, params: ModelParams = MODEL): { board: BoardRow[]; radar: RadarData } {
-  const { board, comparables } = buildBoard(snapshot, params);
-  const watchlist = new Set(snapshot.watchlist);
+export function buildRadar(
+  snapshot: Snapshot,
+  params: ModelParams = MODEL,
+): { board: BoardRow[]; radar: RadarData } {
+  const { board, baseline, flow } = buildBoard(snapshot, params);
   const live = liveRows(snapshot);
-  const categories = [...comparables.categories.values()].map((c) => ({ ...c, rows: 0 }));
+
+  // Copy the category table so the board's row counts do not leak back into the fitted stats.
+  const categories = [...flow.stats.values()].map((s) => ({ ...s, rows: 0 }));
   const byCategory = new Map(categories.map((c) => [c.category, c]));
   for (const row of board) {
     const key = row.category ?? 'Other';
@@ -848,19 +1082,20 @@ export function buildRadar(snapshot: Snapshot, params: ModelParams = MODEL): { b
       byCategory.set(key, {
         category: key,
         peers: 0,
-        anchor_tvl_usd:comparables.global_anchor_tvl_usd,
-        log_multiple_at_anchor: comparables.global_log_multiple_at_anchor,
-        raw_log_multiple_at_anchor:null,
-        multiple_at_anchor: comparables.global_center_multiple,
+        anchor_tvl_usd: baseline.global_anchor_tvl,
+        log_multiple_at_anchor: baseline.global_log_multiple,
+        raw_log_multiple_at_anchor: null,
+        multiple_at_anchor: baseline.global_center_multiple,
         median_multiple: null,
-        flow_center: comparables.global_flow.center,
-        flow_scale: comparables.global_flow.scale,
-        flow_peers: comparables.global_flow.peers,
+        flow_center: flow.global.center,
+        flow_scale: flow.global.scale,
+        flow_peers: flow.global.peers,
         flow_fallback: true,
         fallback: true,
         rows: 1,
       });
   }
+
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -868,28 +1103,34 @@ export function buildRadar(snapshot: Snapshot, params: ModelParams = MODEL): { b
     model_version: MODEL_VERSION,
     model: params,
     regression: {
-      beta: round4(comparables.beta),
-      pairs: comparables.pairs,
-      live_peers: comparables.live_peers,
-      log_multiple_at_anchor: round4(comparables.global_log_multiple_at_anchor),
-      anchor_tvl_usd: comparables.global_anchor_tvl_usd,
-      multiple_at_anchor: round4(comparables.global_center_multiple),
-      flow_center: round4(comparables.global_flow.center),
-      flow_scale: round4(comparables.global_flow.scale),
-      flow_peers: comparables.global_flow.peers,
+      beta: round4(baseline.beta),
+      pairs: baseline.pairs,
+      live_peers: baseline.live_peers,
+      log_multiple_at_anchor: round4(baseline.global_log_multiple),
+      anchor_tvl_usd: baseline.global_anchor_tvl,
+      multiple_at_anchor: round4(baseline.global_center_multiple),
+      flow_center: round4(flow.global.center),
+      flow_scale: round4(flow.global.scale),
+      flow_peers: flow.global.peers,
     },
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
     early_size: board.filter((r) => r.origin === 'below-floor').length,
     off_list_size: board.filter((r) => r.origin === 'off-list').length,
     live_size: live.length,
-    token_recorded_size: snapshot.protocols.filter((p) => !isPreToken(p)).length,
+    token_recorded_size: snapshot.protocols.filter((p) => !hasNoToken(p)).length,
     rows: board,
     live,
-    categories: [...byCategory.values()].sort((a, b) => b.rows - a.rows || b.peers - a.peers || cmpSlug(a.category, b.category)),
+    categories: [...byCategory.values()].sort(
+      (a, b) => b.rows - a.rows || b.peers - a.peers || cmpSlug(a.category, b.category),
+    ),
   };
   return { board, radar };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Input validation, board gate, serialization
+// ---------------------------------------------------------------------------------------------
 
 /** The snapshot out of a file's text, refused unless it is the shape the model scores. */
 export function parseSnapshot(text: string): Snapshot {
@@ -945,7 +1186,7 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
     if (slugs.has(row.slug)) return `${row.slug} appears twice`;
     slugs.add(row.slug);
     if (row.name.trim() === '') return `${row.slug} has no name`;
-    if (!isPreToken(row)) return `${row.slug} does not record a token but the model treats it as pre-token`;
+    if (!hasNoToken(row)) return `${row.slug} does not record a token but the model treats it as pre-token`;
   }
   const missing = snapshot.watchlist.filter((s) => !slugs.has(s));
   if (missing.length > 0) return `the board misses ${missing.length} watchlist slug${missing.length === 1 ? '' : 's'}: ${missing.slice(0, 5).join(', ')}`;
@@ -978,3 +1219,6 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
 export function dataScript(radar: RadarData): string {
   return `window.RADAR=${JSON.stringify(radar)};\n`;
 }
+
+
+
