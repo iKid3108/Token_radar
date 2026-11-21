@@ -23,8 +23,21 @@
 // ICs are summarised. The bootstrap CI covers sampling noise within a split; the repeat block
 // covers the choice of split. They answer different questions and are reported separately.
 //
+// THE SCENARIO SUITE. Three questions one holdout cannot answer, measured beside it:
+//
+//   horizons                does the label's horizon matter? The snapshot carries a single dynamic
+//                           field, so the 30-day row compounds the 7-day one at its own rate and
+//                           is labelled as such rather than passed off as a reading; a real second
+//                           horizon needs a second snapshot
+//   leave-one-category-out  does one category carry the result? Every category is removed in turn
+//                           and the leak-free IC is re-measured, point estimate only
+//   threshold sensitivity   do the z-score cut-offs move the headline? They cannot move the
+//                           leak-free IC, whose three label-reading tilts are off — and the table
+//                           measures that, beside the shipped configuration, which they do move
+//
 // DETERMINISM. Splits hash (slug, seed); the bootstrap uses seeded mulberry32. Two runs write
-// identical bytes.
+// identical bytes, and the scenario suite inherits the same discipline: no clock, no ordering by
+// iteration accident, every sweep listed explicitly.
 
 import {
   MODEL,
@@ -33,6 +46,8 @@ import {
   isSubject,
   loadProtocols,
   scoreComponents,
+  type Baseline,
+  type FlowAdjustment,
   type ModelParams,
   type RowComponents,
   type Snapshot,
@@ -125,6 +140,7 @@ export interface BacktestResult {
   full_model: MetricsBlock & { note: string; leakage_gap: number | null };
   repeated_splits: RepeatBlock;
   by_category: CategoryResult[];
+  scenarios: ScenarioBlock;
   warnings: string[];
 }
 
@@ -179,6 +195,278 @@ function metricsBlock(
   };
 }
 
+// ---------------------------------------------------------------------------------------------
+// The scenario suite
+//
+// Everything below reuses the primary split's fit and scored rows, so a scenario describes the same
+// holdout the headline does rather than a second experiment that happens to share a name. All of it
+// is point estimates: the bootstrap belongs to the headline block, and repeating a 2000-replicate
+// resample inside every sweep would cost seconds to restate what the point column already says.
+// ---------------------------------------------------------------------------------------------
+
+/** One scored held-out row, as every scenario reads it. */
+interface ScoredRow {
+  category: string;
+  label: number;
+  /** The leak-free composite: growth, stale and velocity weights at zero. */
+  leakFree: number;
+}
+
+/** The train-half fit and the held-out rows a scenario measures. */
+interface ScenarioFit {
+  scored: SnapshotProtocol[];
+  baseline: Baseline;
+  flow: FlowAdjustment;
+}
+
+/**
+ * Fit on the train half for `seed` and collect the held-out protocols that carry a label. This
+ * mirrors evaluateSplit's population exactly — the watchlist or the screen, and a non-null label —
+ * so a scenario can never quietly measure a different set of rows than the headline does.
+ */
+function scenarioFit(snapshot: Snapshot, seed: number): ScenarioFit {
+  const { train, test } = splitByCategory(snapshot.protocols, seed);
+  const trainSnapshot: Snapshot = { ...snapshot, protocols: train, watchlist: [] };
+  const universe = loadProtocols(trainSnapshot);
+  const baseline = comparablesBaseline(universe, MODEL);
+  const flow = flowAdjust(universe, baseline, MODEL);
+  const watchlist = new Set(snapshot.watchlist);
+  const scored = test.filter((p) => (watchlist.has(p.slug) || isSubject(p)) && p.change_7d !== null);
+  return { scored, baseline, flow };
+}
+
+/**
+ * The held-out rows every scenario measures: the label beside the leak-free composite. One fit, one
+ * population, taken from the same primary split the headline reports, so a scenario can never
+ * quietly measure a different set of rows than the number it is printed next to.
+ */
+function scenarioRows(snapshot: Snapshot, seed: number): ScoredRow[] {
+  const { scored, baseline, flow } = scenarioFit(snapshot, seed);
+  const leakFreeParams: ModelParams = {
+    ...MODEL,
+    growth_weight: 0,
+    flow_penalty_step: 0,
+    velocity_weight: 0,
+  };
+  return scored.map((p) => ({
+    category: p.category ?? 'Other',
+    label: p.change_7d as number,
+    leakFree: composite(scoreComponents(p, snapshot.as_of, baseline, flow, leakFreeParams)),
+  }));
+}
+
+/** Four decimals, with null passing through untouched. */
+function roundOrNull(n: number | null): number | null {
+  return n === null ? null : round4(n);
+}
+
+/** One label horizon's numbers, and whether it was able to move the headline at all. */
+export interface ScenarioHorizon {
+  horizon_days: number;
+  label: string;
+  /** True when the label is an extrapolation from the observed week rather than a reading. */
+  derived: boolean;
+  derivable_rows: number;
+  dropped_rows: number;
+  rank_ic: number | null;
+  picks: number;
+  hits: number;
+  /** True when this horizon's rank IC equals the observed one's. */
+  same_rank_ic_as_observed: boolean;
+}
+
+/**
+ * The horizons the snapshot can support. `change_7d` is the one dynamic reading it carries. A 30-day
+ * label is derived from that week by compounding it at its own rate; that is an extrapolation, so it
+ * is labelled one rather than passed off as a reading, and a row whose week implies a non-positive
+ * base is dropped instead of being given an invented number. Because the transform is strictly
+ * increasing wherever it is defined, every rank statistic over it is identical to the 7-day one: the
+ * table reports that invariance rather than presenting the horizon as independent evidence.
+ */
+function horizonScenarios(rows: readonly ScoredRow[]): ScenarioHorizon[] {
+  const observedPred = rows.map((r) => r.leakFree);
+  const observedLabel = rows.map((r) => r.label);
+  const observedIc = spearman(observedPred, observedLabel);
+  const observedHit = topQuartileHit(observedPred, observedLabel);
+
+  const kept = rows.filter((r) => 1 + r.label / 100 > 0);
+  const keptPred = kept.map((r) => r.leakFree);
+  const derivedLabel = kept.map((r) => 100 * ((1 + r.label / 100) ** (30 / 7) - 1));
+  const derivedIc = spearman(keptPred, derivedLabel);
+  const derivedHit = topQuartileHit(keptPred, derivedLabel);
+
+  return [
+    {
+      horizon_days: 7,
+      label: 'change_7d (observed)',
+      derived: false,
+      derivable_rows: rows.length,
+      dropped_rows: 0,
+      rank_ic: roundOrNull(observedIc),
+      picks: observedHit.picks,
+      hits: observedHit.hits,
+      same_rank_ic_as_observed: true,
+    },
+    {
+      horizon_days: 30,
+      label: 'change_7d compounded to 30 days (derived)',
+      derived: true,
+      derivable_rows: kept.length,
+      dropped_rows: rows.length - kept.length,
+      rank_ic: roundOrNull(derivedIc),
+      picks: derivedHit.picks,
+      hits: derivedHit.hits,
+      same_rank_ic_as_observed:
+        observedIc !== null && derivedIc !== null && round4(observedIc) === round4(derivedIc),
+    },
+  ];
+}
+
+/** What one category's removal did to the leak-free rank IC. */
+export interface LeaveOneOutRow {
+  category: string;
+  rows: number;
+  ic_without_category: number | null;
+  delta: number | null;
+}
+
+/** The leave-one-category-out stability table. */
+export interface LeaveOneOutBlock {
+  baseline_ic: number | null;
+  rows: LeaveOneOutRow[];
+  /** The category whose removal moved the IC furthest, by absolute delta. */
+  most_influential: string | null;
+  /** Largest delta minus smallest, over the categories whose removal left a computable IC. */
+  spread: number | null;
+}
+
+/** Drop each scored category in turn and re-measure: does one bucket carry the result? */
+function leaveOneCategoryOut(rows: readonly ScoredRow[]): LeaveOneOutBlock {
+  const baseline = spearman(rows.map((r) => r.leakFree), rows.map((r) => r.label));
+
+  const counts = new Map<string, number>();
+  for (const r of rows) counts.set(r.category, (counts.get(r.category) ?? 0) + 1);
+
+  const table: LeaveOneOutRow[] = [];
+  for (const category of counts.keys()) {
+    const kept = rows.filter((r) => r.category !== category);
+    const ic = spearman(kept.map((r) => r.leakFree), kept.map((r) => r.label));
+    table.push({
+      category,
+      rows: counts.get(category)!,
+      ic_without_category: roundOrNull(ic),
+      delta: ic === null || baseline === null ? null : round4(ic - baseline),
+    });
+  }
+  table.sort((a, b) => b.rows - a.rows || (a.category < b.category ? -1 : a.category > b.category ? 1 : 0));
+
+  const deltas = table.map((r) => r.delta).filter((d): d is number => d !== null);
+  const sorted = deltas.slice().sort((a, b) => a - b);
+  const byImpact = table
+    .filter((r) => r.delta !== null)
+    .slice()
+    .sort((a, b) => Math.abs(b.delta!) - Math.abs(a.delta!) || (a.category < b.category ? -1 : 1));
+
+  return {
+    baseline_ic: roundOrNull(baseline),
+    rows: table,
+    most_influential: byImpact.length === 0 ? null : byImpact[0]!.category,
+    spread: sorted.length < 2 ? null : round4(sorted[sorted.length - 1]! - sorted[0]!),
+  };
+}
+
+/** One point on a threshold sweep. */
+export interface ThresholdRow {
+  parameter: string;
+  value: number;
+  leak_free_ic: number | null;
+  full_model_ic: number | null;
+}
+
+/** A threshold sweep, with the one sentence that makes its two columns readable. */
+export interface ThresholdBlock {
+  note: string;
+  rows: ThresholdRow[];
+}
+
+/** The z cut-offs to sweep: the outlier bound, and the cap on the velocity boost. */
+const Z_SWEEP: readonly number[] = [2, 2.5, 3, 3.5, 4];
+const VELOCITY_SWEEP: readonly number[] = [1, 2, 3];
+
+/**
+ * Sweep the two z-score thresholds the model turns on, re-scoring the same held-out rows under each
+ * value. The leak-free column cannot move: its three label-reading tilts are at zero weight, so a
+ * cut-off on a term that no longer enters the product changes nothing. That is the point of printing
+ * both columns — the shipped column is where the sweep bites, and that bite is the leakage the
+ * headline is measuring, not a tuning knob.
+ */
+function thresholdScenarios(snapshot: Snapshot, seed: number): ThresholdBlock {
+  const { scored, baseline, flow } = scenarioFit(snapshot, seed);
+  const labels = scored.map((p) => p.change_7d as number);
+
+  const score = (params: ModelParams): number[] =>
+    scored.map((p) => composite(scoreComponents(p, snapshot.as_of, baseline, flow, params)));
+
+  const leakFreeAt = (overrides: Partial<ModelParams>): number[] => {
+    const params: ModelParams = {
+      ...MODEL,
+      ...overrides,
+      growth_weight: 0,
+      flow_penalty_step: 0,
+      velocity_weight: 0,
+    };
+    return score(params);
+  };
+
+  const rows: ThresholdRow[] = [];
+  const push = (parameter: string, value: number, leakFree: number[], full: number[]): void => {
+    rows.push({
+      parameter,
+      value,
+      leak_free_ic: roundOrNull(spearman(leakFree, labels)),
+      full_model_ic: roundOrNull(spearman(full, labels)),
+    });
+  };
+
+  for (const z of Z_SWEEP) {
+    push('flow_winsor', z, leakFreeAt({ flow_winsor: z }), score({ ...MODEL, flow_winsor: z }));
+  }
+  for (const cap of VELOCITY_SWEEP) {
+    push('velocity_cap', cap, leakFreeAt({ velocity_cap: cap }), score({ ...MODEL, velocity_cap: cap }));
+  }
+
+  return {
+    note:
+      'point rank IC on the primary split at each threshold. The leak-free column is flat by ' +
+      'construction — its label-reading tilts carry zero weight, so no z cut-off can reach it — and ' +
+      'the shipped column is the control that shows the cut-offs acting on terms that do.',
+    rows,
+  };
+}
+
+/** The scenario suite's section of the report. */
+export interface ScenarioBlock {
+  note: string;
+  horizons: ScenarioHorizon[];
+  leave_one_category_out: LeaveOneOutBlock;
+  thresholds: ThresholdBlock;
+}
+
+/**
+ * The scenario suite: label horizons, leave-one-category-out stability, and the z-threshold sweep,
+ * all on the primary split. Pure and deterministic like the rest of the harness.
+ */
+function scenarioBlock(snapshot: Snapshot, seed: number): ScenarioBlock {
+  const rows = scenarioRows(snapshot, seed);
+  return {
+    note:
+      'reported beside the headline, on the same primary split and the same train-half fit: point ' +
+      'estimates only, no second bootstrap',
+    horizons: horizonScenarios(rows),
+    leave_one_category_out: leaveOneCategoryOut(rows),
+    thresholds: thresholdScenarios(snapshot, seed),
+  };
+}
 /**
  * Split every category's protocols in half. Rows are ordered by a hash of (seed, slug), so the
  * split depends on neither the snapshot's own order nor the engine's sort stability; the
@@ -403,6 +691,7 @@ export function runBacktest(snapshot: Snapshot, options: BacktestOptions = {}): 
     },
     repeated_splits: repeated,
     by_category: primary.byCategory,
+    scenarios: scenarioBlock(snapshot, seed),
     warnings,
   };
 }

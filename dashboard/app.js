@@ -1,6 +1,6 @@
-// Token Radar - the dashboard page. Reads window.RADAR and window.BACKTEST from data.js
-// beside the page; offline and static, no fetch and no build step. Sections: score weights, DOM
-// builder, URL hash, filters and order, shared chrome, board table, detail view, validation, render.
+// Token Radar dashboard: offline and static, reads window.RADAR and window.BACKTEST from
+// data.js beside the page. Sections: weights, DOM builder, hash, filters, tables, detail,
+// validation, keyboard.
 (function () {
   'use strict';
 
@@ -23,7 +23,6 @@
     open: null,       // slug shown in the detail view
     exp: null         // slug whose components are expanded in the board
   };
-
 
   function usd(n) {
     if (n === null || n === undefined || !isFinite(n)) return 'n/a';
@@ -51,9 +50,7 @@
     return n > 0 ? 'pos' : n < 0 ? 'neg' : 'dim';
   }
 
-  //
-  // Each tilt enters as an exponent on its stored multiplier: a weight of 1 reproduces
-  // board.json's own ranking, 0 switches the tilt off. Re-ranking is local arithmetic.
+  // Each tilt is an exponent on its stored multiplier: 1 reproduces board.json, 0 disables it.
 
   var TILTS = [
     { key: 'flow', label: 'Flow tilt', hint: '7-day robust-flow growth multiplier' },
@@ -107,7 +104,6 @@
       (d > 0 ? ' ↑' : ' ↓') + Math.abs(d));
   }
 
-
   function el(tag, attrs) {
     var node = document.createElement(tag);
     if (attrs) {
@@ -134,7 +130,6 @@
     }
     return node;
   }
-
 
   function readHash() {
     var raw = window.location.hash.replace(/^#/, '');
@@ -164,7 +159,6 @@
     var s = p.toString();
     window.history.replaceState(null, '', s ? '#' + s : window.location.pathname);
   }
-
 
   function categories() {
     var seen = {};
@@ -208,7 +202,6 @@
         .join(' ').toLowerCase().indexOf(q) >= 0;
     });
   }
-
 
   function chip(text, kind) {
     return el('span', { class: 'chip ' + (kind || '') }, text);
@@ -254,7 +247,7 @@
     }
     return el('div', { class: 'bar-top' },
       el('div', { class: 'brand' }, el('span', { class: 'mark' }), el('span', null, 'TOKEN RADAR')),
-      el('div', { class: 'seg tabs' }, tab('Board', 'board'), tab('Validation', 'validation')),
+      el('div', { class: 'seg tabs' }, tab('Board', 'board'), tab('Validation report', 'validation')),
       el('div', { class: 'meta' },
         el('span', null, 'snapshot ' + D.as_of),
         el('span', null, el('b', null, String(D.watchlist_size)), ' watchlist / ', el('b', null, String(D.board_size)), ' ranked'),
@@ -265,7 +258,6 @@
       el('span', null, 'DefiLlama protocol snapshot ' + D.as_of + ' · ' + D.board_size + ' ranked rows · ' + D.live_size + ' live-token comparables'),
       el('span', null, 'Implied value is this radar’s estimate, not a promise of a token or a price.'));
   }
-
 
   function hero() {
     return el('section', { class: 'hero' },
@@ -384,7 +376,6 @@
     }
   }
 
-
   /** A sortable column head: the second click flips the direction. */
   function th(label, key, align) {
     return el('th', { scope: 'col', class: align || null },
@@ -412,11 +403,7 @@
     };
   }
 
-  /**
-   * The score-components panel for one row. Every line is a field board.json already carries:
-   * the page recomputes the product from the displayed terms and checks it against the stored
-   * implied value, so a reader can audit the arithmetic rather than trust it.
-   */
+  /** Every line is a field board.json already carries; the product is recomputed and checked. */
   function breakdown(r) {
     var m = r.model || {};
     var grid = el('div', { class: 'calc' });
@@ -638,7 +625,6 @@
           ' by ranked rows are shown, and every detail view names its own peers and fitted terms.')));
   }
 
-
   function openDetail(slug) {
     state.open = slug;
     writeHash();
@@ -787,10 +773,7 @@
       foot());
   }
 
-  //
-  // Renders window.BACKTEST, written beside data.js by main.ts from lib/backtest.ts. Nothing
-  // here recomputes a statistic: the report's own numbers are laid out, with the interval drawn
-  // against a -1..1 axis so a reader can see whether it clears zero.
+  // Renders window.BACKTEST: no statistic is recomputed, and each interval is drawn on a -1..1 axis.
 
   /** A horizontal -1..1 axis with the interval band and its point estimate. */
   function intervalBar(ic) {
@@ -824,7 +807,7 @@
         el('section', { class: 'panel' },
           el('div', { class: 'empty' },
             el('h2', null, 'No validation report in this build'),
-            el('p', null, 'The harness runs as BACKTEST=1 node main.ts, writing backtest.json; a board run ' +
+            el('p', null, 'The harness runs as node main.ts --backtest, writing backtest.json; a board run ' +
               'embeds the same report beside data.js, which is where this tab reads it.'))),
         el('div', { class: 'shell' }, foot()));
     }
@@ -925,7 +908,6 @@
       el('div', { class: 'shell' }, foot()));
   }
 
-
   function boardView() {
     rebuildRanks();
     hosts.table = el('div');
@@ -958,6 +940,26 @@
     }
     app.appendChild(boardView());
   }
+
+  // Keyboard: j/k step between the visible rows, Enter opens the focused row (its own handler),
+  // Escape leaves the detail view. Typing in a field or a modifier combination is left alone.
+  document.addEventListener('keydown', function (e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var t = e.target;
+    if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
+    if (e.key === 'Escape') {
+      if (state.open) { state.open = null; writeHash(); render(); }
+      return;
+    }
+    if (e.key !== 'j' && e.key !== 'k') return;
+    var rows = app.querySelectorAll('tbody tr:not(.bdrow)');
+    if (!rows.length) return;
+    e.preventDefault();
+    var at = Array.prototype.indexOf.call(rows, document.activeElement);
+    var to = e.key === 'j' ? Math.min(rows.length - 1, at + 1) : Math.max(0, at - 1);
+    rows[to].focus();
+    rows[to].scrollIntoView({ block: 'nearest' });
+  });
 
   readHash();
   render();

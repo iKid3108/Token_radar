@@ -180,3 +180,133 @@ export function fnv1a(text: string): number {
   }
   return hash >>> 0;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Rank aggregation: many orderings into one
+// ---------------------------------------------------------------------------------------------
+
+/** One ordering of ids, best first. */
+export type Ranking = readonly string[];
+
+/**
+ * Borda count: in a ranking of n ids the top earns n - 1 points and the last 0, so a voter that
+ * ranks only a subset transfers fewer points than one that ranks every id. Points are summed
+ * across voters; an id absent from a voter's ranking simply earns nothing from that voter.
+ */
+export function bordaCount(rankings: readonly Ranking[]): Map<string, number> {
+  const scores = new Map<string, number>();
+  for (const ranking of rankings) {
+    const n = ranking.length;
+    for (let i = 0; i < n; i++) {
+      const id = ranking[i]!;
+      scores.set(id, (scores.get(id) ?? 0) + (n - i - 1));
+    }
+  }
+  return scores;
+}
+
+/**
+ * Reciprocal-rank fusion: a ranking gives its top id 1, the next 1/2, the next 1/3, and so on.
+ * The decay punishes a low position far harder than Borda does, so the head of each ranking
+ * dominates and a single strong voter can carry an id.
+ */
+export function reciprocalRank(rankings: readonly Ranking[]): Map<string, number> {
+  const scores = new Map<string, number>();
+  for (const ranking of rankings) {
+    for (let i = 0; i < ranking.length; i++) {
+      const id = ranking[i]!;
+      scores.set(id, (scores.get(id) ?? 0) + 1 / (i + 1));
+    }
+  }
+  return scores;
+}
+
+/** An aggregate's ids, highest score first, ties broken by id so the order is reproducible. */
+export function orderByScore(scores: ReadonlyMap<string, number>): string[] {
+  return [...scores.entries()]
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([id]) => id);
+}
+
+/**
+ * Kendall's tau-b over paired observations: (concordant - discordant) / sqrt of the pairs that
+ * are not tied in either series. tau-b is the tie-corrected form, which matters here because
+ * both the board and a 7-day flow produce many repeated values. Null below 2 pairs or when
+ * either series is constant.
+ */
+export function kendallTau(a: readonly number[], b: readonly number[]): number | null {
+  const n = Math.min(a.length, b.length);
+  if (n < 2) return null;
+  let concordant = 0;
+  let discordant = 0;
+  let tiedA = 0;
+  let tiedB = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const da = Math.sign(a[j]! - a[i]!);
+      const db = Math.sign(b[j]! - b[i]!);
+      if (da === 0 && db === 0) continue; // a joint tie carries no ordering information
+      if (da === 0) tiedA++;
+      else if (db === 0) tiedB++;
+      else if (da === db) concordant++;
+      else discordant++;
+    }
+  }
+  const den = Math.sqrt((concordant + discordant + tiedA) * (concordant + discordant + tiedB));
+  return den === 0 ? null : (concordant - discordant) / den;
+}
+
+/**
+ * The interior decile cut points of a list: the 10th, 20th, ... 90th percentiles. A list shorter
+ * than the bin count still returns the requested count of cut points, so the caller decides
+ * whether a bucket is dense enough to read.
+ */
+export function decileBreaks(values: readonly number[], bins = 10): number[] {
+  if (bins < 2 || !Number.isSafeInteger(bins)) return [];
+  const breaks: number[] = [];
+  for (let k = 1; k < bins; k++) breaks.push(quantile(values, k / bins));
+  return breaks;
+}
+
+/** One category's decile shape. */
+export interface CategoryDeciles {
+  /** How many values the category holds. */
+  count: number;
+  /** Interior cut points, ascending: bins - 1 of them. */
+  breaks: number[];
+  /** How many values fall in each of the `bins` buckets; sums to `count`. */
+  counts: number[];
+  /** True when the category holds fewer than two values per bucket, so the shape is noise. */
+  sparse: boolean;
+}
+
+/**
+ * Decile shapes per category. A value equal to a cut point stays in the lower bucket, so every
+ * value lands somewhere and `counts` always sums to `count`. The map's keys are sorted, and each
+ * category's buckets are computed over its own values only, never over the pooled board.
+ */
+export function categoryDeciles(
+  rows: ReadonlyArray<{ category: string | null; value: number }>,
+  bins = 10,
+): Map<string, CategoryDeciles> {
+  const grouped = new Map<string, number[]>();
+  for (const row of rows) {
+    const key = row.category ?? 'Other';
+    const bucket = grouped.get(key);
+    if (bucket === undefined) grouped.set(key, [row.value]);
+    else bucket.push(row.value);
+  }
+  const out = new Map<string, CategoryDeciles>();
+  for (const key of [...grouped.keys()].sort()) {
+    const values = grouped.get(key)!;
+    const breaks = decileBreaks(values, bins);
+    const counts = new Array<number>(bins).fill(0);
+    for (const value of values) {
+      let bin = 0;
+      while (bin < breaks.length && value > breaks[bin]!) bin++;
+      counts[bin]! += 1;
+    }
+    out.set(key, { count: values.length, breaks, counts, sparse: values.length < bins * 2 });
+  }
+  return out;
+}

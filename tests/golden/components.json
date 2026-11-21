@@ -1,0 +1,182 @@
+{
+  "top": {
+    "slug": "sentora-curator",
+    "rank": 1,
+    "implied": 427884108,
+    "components": {
+      "implied_usd": 427884108,
+      "age_days": 407,
+      "base_usd": 407638307.41122335,
+      "base_multiple": 0.1478,
+      "multiple": 0.1552,
+      "beta": 0.7615,
+      "category": {
+        "log_multiple": -0.8172,
+        "anchor_tvl": 28044836,
+        "peers": 1,
+        "multiple": 0.4417,
+        "fallback": false
+      },
+      "flow": {
+        "center": -7.948,
+        "scale": 6.1377,
+        "peers": 39,
+        "fallback": false,
+        "z": 1.6806,
+        "used_pct": 2.3672,
+        "stale": false,
+        "outlier_penalty": 1
+      },
+      "growth": {
+        "pct": 2.3672,
+        "multiplier": 1.0071
+      },
+      "velocity": {
+        "z": 1.6806,
+        "boost_pct": 168.0638,
+        "multiplier": 1.084
+      },
+      "concentration": {
+        "chain_count": 4,
+        "single": false,
+        "multiplier": 1
+      },
+      "maturity_multiplier": 0.9615
+    }
+  },
+  "stale": {
+    "slug": "bitfi-basis",
+    "rank": 17,
+    "implied": 47823219,
+    "components": {
+      "implied_usd": 47823219,
+      "age_days": 638,
+      "base_usd": 58237391.65988105,
+      "base_multiple": 0.271,
+      "multiple": 0.2225,
+      "beta": 0.7615,
+      "category": {
+        "log_multiple": -0.9101,
+        "anchor_tvl": 40917496,
+        "peers": 7,
+        "multiple": 0.4025,
+        "fallback": false
+      },
+      "flow": {
+        "center": -0.122,
+        "scale": 1.5023,
+        "peers": 21,
+        "fallback": false,
+        "z": -6.7485,
+        "used_pct": -4.629,
+        "stale": true,
+        "outlier_penalty": 0.8126
+      },
+      "growth": {
+        "pct": -4.629,
+        "multiplier": 0.9861
+      },
+      "velocity": {
+        "z": null,
+        "boost_pct": 0,
+        "multiplier": 1
+      },
+      "concentration": {
+        "chain_count": 7,
+        "single": false,
+        "multiplier": 1
+      },
+      "maturity_multiplier": 1.0248
+    }
+  },
+  "fallback": {
+    "slug": "symbiotic",
+    "rank": 8,
+    "implied": 71039693,
+    "components": {
+      "implied_usd": 71039693,
+      "age_days": 886,
+      "base_usd": 73312887.83388086,
+      "base_multiple": 0.2887,
+      "multiple": 0.2798,
+      "beta": 0.7615,
+      "category": {
+        "log_multiple": -1.2423,
+        "anchor_tvl": 253923299,
+        "peers": 0,
+        "multiple": 0.2887,
+        "fallback": true
+      },
+      "flow": {
+        "center": -8.2334,
+        "scale": 6.3882,
+        "peers": 754,
+        "fallback": true,
+        "z": -0.5946,
+        "used_pct": -12.0318,
+        "stale": false,
+        "outlier_penalty": 1
+      },
+      "growth": {
+        "pct": -12.0318,
+        "multiplier": 0.9639
+      },
+      "velocity": {
+        "z": 0,
+        "boost_pct": 0,
+        "multiplier": 1
+      },
+      "concentration": {
+        "chain_count": 1,
+        "single": true,
+        "multiplier": 0.92
+      },
+      "maturity_multiplier": 1.0927
+    }
+  },
+  "last": {
+    "slug": "qearn",
+    "rank": 197,
+    "implied": 961249,
+    "components": {
+      "implied_usd": 961249,
+      "age_days": 604,
+      "base_usd": 1052656.6005452506,
+      "base_multiple": 0.0958,
+      "multiple": 0.0875,
+      "beta": 0.7615,
+      "category": {
+        "log_multiple": -2.6905,
+        "anchor_tvl": 46615368,
+        "peers": 2,
+        "multiple": 0.0678,
+        "fallback": false
+      },
+      "flow": {
+        "center": -8.8705,
+        "scale": 5.5666,
+        "peers": 11,
+        "fallback": false,
+        "z": 0.0621,
+        "used_pct": -8.5249,
+        "stale": false,
+        "outlier_penalty": 1
+      },
+      "growth": {
+        "pct": -8.5249,
+        "multiplier": 0.9744
+      },
+      "velocity": {
+        "z": 0.0621,
+        "boost_pct": 6.2085,
+        "multiplier": 1.0031
+      },
+      "concentration": {
+        "chain_count": 1,
+        "single": true,
+        "multiplier": 0.92
+      },
+      "maturity_multiplier": 1.0155
+    }
+  }
+}
