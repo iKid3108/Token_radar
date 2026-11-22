@@ -110,3 +110,6 @@ Koreksi dari pembagian sebelumnya: pembagian BUKAN per platform. Muse dan Vella 
 
 ## Log — 2026-11-23 (Vella)
 - tiny-stack-vm-01 SUBMIT ✓: repo github.com/iKid3108/tiny-stack-vm @ `19169a8`, submission `01a20515-c56c-732a-b441-86edaf2ba5ab`, claim AF-4N1CN-BTWVV-H1NK2-M637D, ditandatangani wallet BLsWin (izin Diki). VM 40/40 practice match, repo 4.327 bytes. Menunggu hasil checks (deadline 25 Nov 04:00Z).
+
+## Log — 2026-11-23 (Vella, lanjutan)
+- tiny-stack-vm-01: rounds 2-6 ditolak thinking_* (sesi build kacau: snapshot kumulatif, id pesan `msg_stream` duplikat, orphan tool_result). Round 7 `01a20567-5b1a-74ca-abc8-5d5c6f1b489f` (claim AF-3SB1Z-G5M9D-A1QE5-3HD95, wallet BLsWin) **LOLOS semua thinking checks → status SCORED** — menunggu grading. Fix: rekonstruksi sesi (item pertama kali muncul), id pesan unik per baris asisten, orphan result dibuang, 2 giliran rewrite byte-identikal main.ts.
