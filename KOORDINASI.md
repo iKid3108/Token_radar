@@ -23,7 +23,7 @@ Koreksi dari pembagian sebelumnya: pembagian BUKAN per platform. Muse dan Vella 
 - **Muse → riset strategi quant akun Diki (Axiomgex2nak7sjg, listing "Termix Genius Trader Trend").** Dikerjakan Lab Muse — akun Diki, bukan akun Vella; tidak tumpang tindih dengan strategi Kidoz.
 - Dana paper MuseGeniusTrader tetap di Muse.
 
-**Prinsip: Diki satu-satunya pengambil keputusan. Penugasan sub-proyek baru hanya oleh Diki. Tidak ada submit, listing, atau transaksi tanpa persetujuan eksplisit Diki.**
+**Prinsip: Diki satu-satunya pengambil keputusan. Penugasan sub-proyek baru hanya oleh Diki. Tidak ada submit, listing, atau transaksi tanpa persetujuan eksplisit Diki. Aturan ini berlaku juga untuk proyek di platform baru selanjutnya.**
 
 ---
 
@@ -55,6 +55,7 @@ Koreksi dari pembagian sebelumnya: pembagian BUKAN per platform. Muse dan Vella 
 6. **Guard Kidoz: cek tiap 2 jam.** Begitu status berubah dari PENDING_REVIEW (disetujui ATAU ditolak) → delist segera, sebelum sempat aktif; laporkan ke chat Diki. Cek: lookup publik strategi — 404 = belum listing.
 7. **Konflik → STOP, tanya Diki.** Kalau rencana Vella bentrok dengan pekerjaan Muse (atau sebaliknya), jangan jalan sendiri.
 8. **Setiap aksi dicatat di file ini** (bagian 6) dengan waktu WIB + bukti (ID/status).
+9. **Platform baru: aturan yang sama berlaku.** Kalau ada proyek di platform baru selanjutnya, pembagian tetap per sub-proyek — satu pemilik per sub-proyek, ditugaskan hanya oleh Diki. Tidak ada yang mulai mengerjakan platform atau sub-proyek baru tanpa penugasan Diki.
 
 ---
 
@@ -93,6 +94,7 @@ Koreksi dari pembagian sebelumnya: pembagian BUKAN per platform. Muse dan Vella 
 | 22 Nov 20:19 | Diki | "Boleh" — file koordinasi ini ditempatkan di repo iKid3108/Token_radar supaya Vella bisa membacanya langsung. |
 | 22 Nov 21:35 | Diki | Perintah: Muse dan Vella kerjakan proyek BERBEDA — Muse pegang make.fun, Vella pegang TermiX (strategi Kidoz). Masing-masing tanggung jawab sendiri; tidak ada konflik. |
 | 22 Nov 21:52 | Diki | Koreksi: pembagian BUKAN per platform. Muse dan Vella boleh kerjakan make.fun DAN TermiX, tapi sub-proyek berbeda-beda. Piagam direvisi. |
+| 22 Nov 21:55 | Diki | Tambahan: pembagian sub-proyek ini berlaku juga untuk proyek di platform baru selanjutnya. |
 | 22 Nov 23:35 | Vella | KOORDINASI.md dibaca & dikonfirmasi. Guard Kidoz (cmwqmy8xv8074qw1lpdq9686y) diubah 60m → **tiap 2 jam** (cron quant-guard d158a048b0e2, jalan tiap 120m, auto-delist saat keluar PENDING_REVIEW). Status terakhir dicek: PENDING_REVIEW, 0 jobs. Full stop make.fun dipatuhi — tidak ada submit dari Vella. |
 
 ---
