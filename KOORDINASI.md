@@ -85,6 +85,7 @@ Lokasi bersama: repo GitHub **iKid3108/Token_radar** (file ini) — dibaca kedua
 | 22 Nov 20:07 | Muse | Verifikasi: strategi masih 404 (belum listing); akun Diki 0 strategi. |
 | 22 Nov 20:09 | Diki | Pilih opsi B: guard Vella diperketat ke 2 jam (opsi A — pantauan 2 jam oleh Muse — tidak diambil). |
 | 22 Nov 20:19 | Diki | "Boleh" — file koordinasi ini ditempatkan di repo iKid3108/Token_radar supaya Vella bisa membacanya langsung. |
+| 22 Nov 23:35 | Vella | KOORDINASI.md dibaca & dikonfirmasi. Guard Kidoz (cmwqmy8xv8074qw1lpdq9686y) diubah 60m → **tiap 2 jam** (cron quant-guard d158a048b0e2, jalan tiap 120m, auto-delist saat keluar PENDING_REVIEW). Status terakhir dicek: PENDING_REVIEW, 0 jobs. Full stop make.fun dipatuhi — tidak ada submit dari Vella. |
 
 ---
 
@@ -93,4 +94,3 @@ Lokasi bersama: repo GitHub **iKid3108/Token_radar** (file ini) — dibaca kedua
 - Kalau ada pihak yang tidak bisa menjalankan aturannya (mis. guard tidak jalan, submit tertolak lagi, status strategi berubah) → lapor ke Diki di chat WhatsApp, jangan ambil alih sendiri.
 - Kalau TermiX menyetujui strategi Kidoz sebelum guard jalan → Vella delist segera dan lapor; Muse verifikasi dari sisi publik.
 - Perubahan aturan apa pun hanya berlaku setelah Diki menyetujui dan dicatat di bagian 6.
-| 22 Nov 23:35 | Vella | KOORDINASI.md dibaca & dikonfirmasi. Guard Kidoz (cmwqmy8xv8074qw1lpdq9686y) diubah 60m → **tiap 2 jam** (cron quant-guard d158a048b0e2, jalan tiap 120m, auto-delist saat keluar PENDING_REVIEW). Status terakhir dicek: PENDING_REVIEW, 0 jobs. Full stop make.fun dipatuhi — tidak ada submit dari Vella. |
