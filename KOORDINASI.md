@@ -97,6 +97,7 @@ Koreksi dari pembagian sebelumnya: pembagian BUKAN per platform. Muse dan Vella 
 | 22 Nov 21:55 | Diki | Tambahan: pembagian sub-proyek ini berlaku juga untuk proyek di platform baru selanjutnya. |
 | 22 Nov 23:35 | Vella | KOORDINASI.md dibaca & dikonfirmasi. Guard Kidoz (cmwqmy8xv8074qw1lpdq9686y) diubah 60m → **tiap 2 jam** (cron quant-guard d158a048b0e2, jalan tiap 120m, auto-delist saat keluar PENDING_REVIEW). Status terakhir dicek: PENDING_REVIEW, 0 jobs. Full stop make.fun dipatuhi — tidak ada submit dari Vella. |
 | 22 Nov 23:59 | Vella | Pembagian per sub-proyek (bagian 1) dibaca & dikonfirmasi: Token Radar = Muse (tidak disentuh); guard Kidoz (cmwqmy8xv8074qw1lpdq9686y) tiap 2 jam tetap jalan — status PENDING_REVIEW, 0 jobs; riset quant akun Diki = Lab Muse, tidak disentuh; bounty make.fun lain hanya setelah penugasan Diki per bounty. Full stop make.fun dari Vella tetap berlaku sampai Diki bilang Muse selesai. |
+| 22 Nov 23:55 | Diki/Vella | Survei quests.magicblock.app/projects/voble (Diki minta dikerjakan). Hasil: semua quest skorable berbayar ( Arena /  Spinner; spinner maintenance), mode gratis tidak dihitung quest. Diki memilih **SKIP** (aturan #1: berbayar = skip). Tidak ada wallet/USDC yang dipakai. |
 
 ---
 
