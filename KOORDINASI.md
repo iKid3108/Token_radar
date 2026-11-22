@@ -7,23 +7,23 @@ Lokasi bersama: repo GitHub **iKid3108/Token_radar** (file ini) — dibaca kedua
 
 ---
 
-## 1. Pembagian proyek (perintah Diki, 22 Nov 2026 21:35 WIB)
+## 1. Pembagian sub-proyek (revisi perintah Diki, 22 Nov 2026 21:52 WIB)
 
-Supaya tidak ada konflik, Muse dan Vella mengerjakan proyek yang BERBEDA. Masing-masing memegang tanggung jawabnya sendiri.
+Koreksi dari pembagian sebelumnya: pembagian BUKAN per platform. Muse dan Vella BOLEH mengerjakan make.fun DAN TermiX — tetapi dengan SUB-PROYEK yang berbeda-beda. Setiap sub-proyek punya SATU pemilik; jangan sentuh sub-proyek orang lain.
 
-**Muse — make.fun (seluruhnya).**
-- Token Radar: tulis ulang, submit (ditandatangani keypair 39NC9S), pantau tiap 2 jam, klaim hadiah.
-- Semua bounty make.fun lainnya di akun ikid3108.
-- Ukuran: submisi lolos cek transkrip (≥30% kode ditulis dalam sesi terekam); round 1 sudah scored (hasil 29 Des 2026); slot Token Radar 6/10; batas submit round 14 Des 2026 10:00 WIB.
+**make.fun — pembagian per bounty/entry:**
+- **Muse → Token Radar (token-radar-01).** Tulis ulang, submit (ditandatangani keypair 39NC9S), pantau tiap 2 jam, klaim hadiah.
+- **Vella → (belum ada).** Vella boleh pegang bounty make.fun LAIN, tapi penugasannya oleh Diki per bounty — dan BUKAN Token Radar. Tidak ada bounty baru tanpa persetujuan Diki.
+- Ukuran: submisi lolos cek transkrip (≥30%); round 1 sudah scored (hasil 29 Des 2026); slot 6/10; batas submit round 14 Des 2026 10:00 WIB.
 
-**Vella — TermiX (strategi Kidoz, akun kidoz.ai).**
-- Guard strategi "Kidoz Adaptive Rebalancer" (ID `cmwqmy8xv8074qw1lpdq9686y`): cek tiap 2 jam; begitu keluar dari PENDING_REVIEW → delist segera + lapor ke Diki.
+**TermiX — pembagian per strategi/listing:**
+- **Vella → strategi Kidoz Adaptive Rebalancer (akun kidoz.ai).** Guard tiap 2 jam; begitu keluar dari PENDING_REVIEW → delist segera + lapor ke Diki.
 - Ukuran: strategi tidak pernah aktif/didanai; 0 jobs.
 - Lab menolak strategi itu di semua 13 varian — tidak ada variannya yang boleh disubmit.
+- **Muse → riset strategi quant akun Diki (Axiomgex2nak7sjg, listing "Termix Genius Trader Trend").** Dikerjakan Lab Muse — akun Diki, bukan akun Vella; tidak tumpang tindih dengan strategi Kidoz.
+- Dana paper MuseGeniusTrader tetap di Muse.
 
-**Tetap di Muse (bukan proyek Vella):** riset strategi quant untuk akun Diki sendiri (Axiomgex2nak7sjg, listing "Termix Genius Trader Trend") dikerjakan Lab Muse — itu akun Diki, bukan akun Vella; tidak tumpang tindih dengan strategi Kidoz. Dana paper MuseGeniusTrader juga tetap di Muse.
-
-**Prinsip: Diki satu-satunya pengambil keputusan. Tidak ada submit, listing, atau transaksi tanpa persetujuan eksplisit Diki.**
+**Prinsip: Diki satu-satunya pengambil keputusan. Penugasan sub-proyek baru hanya oleh Diki. Tidak ada submit, listing, atau transaksi tanpa persetujuan eksplisit Diki.**
 
 ---
 
@@ -39,8 +39,8 @@ Supaya tidak ada konflik, Muse dan Vella mengerjakan proyek yang BERBEDA. Masing
 
 | Pihak | Peran | Yang TIDAK dilakukan |
 |---|---|---|
-| **Muse** | make.fun seluruhnya (Token Radar + semua bounty ikid3108); riset quant akun Diki (Lab); dana paper MuseGeniusTrader (S3) | Tidak kirim keypair ke siapa pun; tidak menyentuh strategi Kidoz milik Vella; tidak submit strategi TermiX yang ditolak Lab |
-| **Vella** | TermiX — strategi Kidoz (guard 2 jam + delist/withdraw) | Tidak menyentuh make.fun sama sekali; tidak submit strategi tanpa validasi Lab |
+| **Muse** | Token Radar (make.fun) + riset quant akun Diki / Lab (TermiX) + dana paper MuseGeniusTrader (S3) | Tidak kirim keypair ke siapa pun; tidak menyentuh strategi Kidoz milik Vella; tidak submit strategi TermiX yang ditolak Lab |
+| **Vella** | Strategi Kidoz (TermiX, guard 2 jam + delist/withdraw); bounty make.fun lain HANYA kalau ditugaskan Diki | Tidak menyentuh Token Radar; tidak submit strategi tanpa validasi Lab; tidak ambil bounty baru tanpa persetujuan Diki |
 | **Diki** | Jembatan + approver. Semua keputusan lewat Diki | — |
 
 ---
@@ -49,7 +49,7 @@ Supaya tidak ada konflik, Muse dan Vella mengerjakan proyek yang BERBEDA. Masing
 
 1. **Satu builder per entry (make.fun).** Yang menulis kode, dia yang submit, dalam sesi terekam. Cek: transkrip make.fun ≥30%.
 2. **Keypair 39NC9S dipegang Muse saja.** Tidak dikirim ke siapa pun, termasuk Vella. Submit berikutnya ditandatangani Muse sebagai pemegang keypair.
-3. **Pembagian proyek: Vella tidak mengerjakan make.fun sama sekali.** make.fun adalah proyek Muse. Sebaliknya Muse tidak menyentuh strategi Kidoz milik Vella — itu proyek Vella.
+3. **Pembagian sub-proyek: setiap bounty/entry (make.fun) dan setiap strategi/listing (TermiX) punya SATU pemilik.** Pemilik dicatat di papan status (bagian 5). Jangan sentuh sub-proyek orang lain. Sub-proyek baru ditugaskan hanya oleh Diki.
 4. **Semua submit pakai wallet 39NC9S…** Wallet Vella (BLsWin…) terdaftar di akun tapi bukan untuk submit.
 5. **Tidak ada strategi TermiX yang disubmit tanpa lolos 4 gerbang Lab + persetujuan Diki.** Gerbang G1 (12 bulan terakhir positif) tetap seperti kata Diki.
 6. **Guard Kidoz: cek tiap 2 jam.** Begitu status berubah dari PENDING_REVIEW (disetujui ATAU ditolak) → delist segera, sebelum sempat aktif; laporkan ke chat Diki. Cek: lookup publik strategi — 404 = belum listing.
@@ -60,20 +60,22 @@ Supaya tidak ada konflik, Muse dan Vella mengerjakan proyek yang BERBEDA. Masing
 
 ## 5. Papan status (terakhir dicek 22 Nov 2026 ~20:07 WIB)
 
-**make.fun (akun ikid3108) — PROYEK MUSE. Vella tidak menyentuh.**
+**make.fun (akun ikid3108)**
+- Token Radar → PEMILIK: MUSE. Vella tidak menyentuh.
+- Bounty lain → belum ditugaskan ke Vella; penugasan baru perlu persetujuan Diki per bounty.
 - Token Radar round 1: SCORED, hasil 29 Des 2026 — aman, jangan disentuh.
 - Token Radar round 2–6: DITOLAK semua (transkrip 0% → 10,7% → 18,2%, syarat ≥30%).
 - Token Radar round 7: BELUM DISUBMIT (bundle tidak valid UTF-8 + kuota harian habis). Slot 6/10.
-- Tulis ulang Token Radar oleh Muse: BERJALAN. Full stop berlaku sampai selesai.
+- Tulis ulang Token Radar oleh Muse: BERJALAN.
 - gta6-01 "Neon Harbor": sudah masuk, tutup 24 Nov 2026 22:00 WIB, hasil 10 Des 2026.
 - gta6-meme-x-01 "Waited 13 Years": hasil 8 Des 2026; post X @AsepRizkiCiamis tetap tayang & publik sampai hasil keluar.
 
-**TermiX — strategi Kidoz — PROYEK VELLA.**
-- Strategi Kidoz Adaptive Rebalancer (`cmwqmy8xv8074qw1lpdq9686y`): PENDING_REVIEW di kidoz.ai (Vella). Lookup publik 404 = belum listing, belum bisa didanai klien.
+**TermiX**
+- Strategi Kidoz Adaptive Rebalancer (`cmwqmy8xv8074qw1lpdq9686y`) → PEMILIK: VELLA. PENDING_REVIEW di kidoz.ai (Vella). Lookup publik 404 = belum listing, belum bisa didanai klien.
 - Akun Diki: 0 strategi. Tidak ada yang disubmit dari sisi Diki.
 - Route withdraw tidak ada (DELETE/PATCH/cancel/feedback semua 404) — satu-satunya mitigasi adalah guard (aturan 6).
 - Guard Vella: 60 jam → tiap 2 jam (Diki pilih opsi B, 22 Nov 20:09 WIB; Vella konfirmasi 21:33 WIB).
-- **Riset quant akun Diki (Lab Muse, bukan proyek Vella):** Round 3 selesai, tidak ada yang lolos 4 gerbang; pilihan lanjut (drop ide listing / lanjut jejak §9) masih menunggu keputusan Diki.
+- **Riset quant akun Diki (Lab Muse) → PEMILIK: MUSE.** Round 3 selesai, tidak ada yang lolos 4 gerbang; pilihan lanjut (drop ide listing / lanjut jejak §9) masih menunggu keputusan Diki.
 
 ---
 
@@ -90,6 +92,7 @@ Supaya tidak ada konflik, Muse dan Vella mengerjakan proyek yang BERBEDA. Masing
 | 22 Nov 20:09 | Diki | Pilih opsi B: guard Vella diperketat ke 2 jam (opsi A — pantauan 2 jam oleh Muse — tidak diambil). |
 | 22 Nov 20:19 | Diki | "Boleh" — file koordinasi ini ditempatkan di repo iKid3108/Token_radar supaya Vella bisa membacanya langsung. |
 | 22 Nov 21:35 | Diki | Perintah: Muse dan Vella kerjakan proyek BERBEDA — Muse pegang make.fun, Vella pegang TermiX (strategi Kidoz). Masing-masing tanggung jawab sendiri; tidak ada konflik. |
+| 22 Nov 21:52 | Diki | Koreksi: pembagian BUKAN per platform. Muse dan Vella boleh kerjakan make.fun DAN TermiX, tapi sub-proyek berbeda-beda. Piagam direvisi. |
 | 22 Nov 23:35 | Vella | KOORDINASI.md dibaca & dikonfirmasi. Guard Kidoz (cmwqmy8xv8074qw1lpdq9686y) diubah 60m → **tiap 2 jam** (cron quant-guard d158a048b0e2, jalan tiap 120m, auto-delist saat keluar PENDING_REVIEW). Status terakhir dicek: PENDING_REVIEW, 0 jobs. Full stop make.fun dipatuhi — tidak ada submit dari Vella. |
 
 ---
