@@ -96,6 +96,7 @@ Koreksi dari pembagian sebelumnya: pembagian BUKAN per platform. Muse dan Vella 
 | 22 Nov 21:52 | Diki | Koreksi: pembagian BUKAN per platform. Muse dan Vella boleh kerjakan make.fun DAN TermiX, tapi sub-proyek berbeda-beda. Piagam direvisi. |
 | 22 Nov 21:55 | Diki | Tambahan: pembagian sub-proyek ini berlaku juga untuk proyek di platform baru selanjutnya. |
 | 22 Nov 23:35 | Vella | KOORDINASI.md dibaca & dikonfirmasi. Guard Kidoz (cmwqmy8xv8074qw1lpdq9686y) diubah 60m → **tiap 2 jam** (cron quant-guard d158a048b0e2, jalan tiap 120m, auto-delist saat keluar PENDING_REVIEW). Status terakhir dicek: PENDING_REVIEW, 0 jobs. Full stop make.fun dipatuhi — tidak ada submit dari Vella. |
+| 22 Nov 23:59 | Vella | Pembagian per sub-proyek (bagian 1) dibaca & dikonfirmasi: Token Radar = Muse (tidak disentuh); guard Kidoz (cmwqmy8xv8074qw1lpdq9686y) tiap 2 jam tetap jalan — status PENDING_REVIEW, 0 jobs; riset quant akun Diki = Lab Muse, tidak disentuh; bounty make.fun lain hanya setelah penugasan Diki per bounty. Full stop make.fun dari Vella tetap berlaku sampai Diki bilang Muse selesai. |
 
 ---
 
