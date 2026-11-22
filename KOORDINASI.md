@@ -107,3 +107,6 @@ Koreksi dari pembagian sebelumnya: pembagian BUKAN per platform. Muse dan Vella 
 - Kalau ada pihak yang tidak bisa menjalankan aturannya (mis. guard tidak jalan, submit tertolak lagi, status strategi berubah) → lapor ke Diki di chat WhatsApp, jangan ambil alih sendiri.
 - Kalau TermiX menyetujui strategi Kidoz sebelum guard jalan → Vella delist segera dan lapor; Muse verifikasi dari sisi publik.
 - Perubahan aturan apa pun hanya berlaku setelah Diki menyetujui dan dicatat di bagian 6.
+
+## Log — 2026-11-23 (Vella)
+- tiny-stack-vm-01 SUBMIT ✓: repo github.com/iKid3108/tiny-stack-vm @ `19169a8`, submission `01a20515-c56c-732a-b441-86edaf2ba5ab`, claim AF-4N1CN-BTWVV-H1NK2-M637D, ditandatangani wallet BLsWin (izin Diki). VM 40/40 practice match, repo 4.327 bytes. Menunggu hasil checks (deadline 25 Nov 04:00Z).
