@@ -113,3 +113,6 @@ Koreksi dari pembagian sebelumnya: pembagian BUKAN per platform. Muse dan Vella 
 
 ## Log — 2026-11-23 (Vella, lanjutan)
 - tiny-stack-vm-01: rounds 2-6 ditolak thinking_* (sesi build kacau: snapshot kumulatif, id pesan `msg_stream` duplikat, orphan tool_result). Round 7 `01a20567-5b1a-74ca-abc8-5d5c6f1b489f` (claim AF-3SB1Z-G5M9D-A1QE5-3HD95, wallet BLsWin) **LOLOS semua thinking checks → status SCORED** — menunggu grading. Fix: rekonstruksi sesi (item pertama kali muncul), id pesan unik per baris asisten, orphan result dibuang, 2 giliran rewrite byte-identikal main.ts.
+
+### 26 Nov 2026 — Delphi mining (cron 15m)
+- Market ONS GDP Oct 2026 MoM >=0.1% (0x10d5075e..., odds YES 61.5%, pot 19.52 USDC.e, cutoff 10 Dec): submit b6d75709 (note PMI Composite 52.9 vs anchor Sep 52.0->+0.2%, arketipe perhitungan) → status UNMATCHED (markets=[]) karena field salah (`market`/`side`); field benar = `marketAddress` (satu field, tanpa `side` — arah dinyatakan di note). Orphan tetap menghabiskan slot restricted (cap_reached saat resubmit). RETRY tidak bisa (hanya untuk status failed). Pelajaran: selalu submit pakai marketAddress, verifikasi markets[] terisi di receipt.
